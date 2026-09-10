@@ -2322,6 +2322,8 @@ export interface Translations {
 
   // Agent Chat
   agentChat: {
+    attachmentTooLarge: string;
+    attachmentExtractionFailed: string;
     title: string;
     subtitle: string;
     newChat: string;

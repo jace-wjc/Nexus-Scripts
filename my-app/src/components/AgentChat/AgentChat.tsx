@@ -731,7 +731,7 @@ function readFileAsText(file: File): Promise<string> {
     });
 }
 
-async function extractDocumentText(file: File): Promise<string> {
+async function extractDocumentText(file: File, messages: { attachmentTooLarge: string; attachmentExtractionFailed: string }): Promise<string> {
     const formData = new FormData();
     formData.append('file', file);
 
@@ -740,9 +740,10 @@ async function extractDocumentText(file: File): Promise<string> {
         body: formData,
     });
 
-    const data = await response.json().catch(() => null) as { text?: string; error?: string } | null;
+    const data = await response.json().catch(() => null) as { text?: string; code?: string } | null;
     if (!response.ok) {
-        throw new Error(data?.error || `提取失败 (${response.status})`);
+        throw new Error(data?.code === 'ATTACHMENT_TOO_LARGE'
+            ? messages.attachmentTooLarge : `${messages.attachmentExtractionFailed} (${response.status})`);
     }
 
     return trimAttachmentText(data?.text || '');
@@ -1142,7 +1143,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ onBack }) => {
             }
 
             if (requiresTextExtraction(fileLike)) {
-                extractDocumentText(file)
+                extractDocumentText(file, t.agentChat)
                     .then((textContent) => {
                         if (!textContent) {
                             throw new Error('未提取到可用文本');
@@ -2096,7 +2097,6 @@ const AgentChat: React.FC<AgentChatProps> = ({ onBack }) => {
 };
 
 export default AgentChat;
-
 
 
 

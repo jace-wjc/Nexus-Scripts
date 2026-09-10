@@ -2353,6 +2353,8 @@ export const zhCN: Translations = {
 
     // Agent Chat
     agentChat: {
+        attachmentTooLarge: '附件不能超过 20 MB，请压缩或拆分后重试',
+        attachmentExtractionFailed: '附件提取失败，请检查文件或重新上传',
         title: 'AI Agent',
         subtitle: '智能对话助手 · 预设专属工作流',
         newChat: '新建对话',

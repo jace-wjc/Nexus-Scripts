@@ -8,6 +8,7 @@ import { requireFreshScriptHubPermission } from '@/lib/server/scriptHubSession';
 export const dynamic = 'force-dynamic';
 
 const MAX_EXTRACTED_TEXT_LENGTH = 100_000;
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 function trimExtractedText(text: string): string {
     if (text.length <= MAX_EXTRACTED_TEXT_LENGTH) {
@@ -25,10 +26,13 @@ export async function POST(request: NextRequest) {
 
     try {
         const formData = await request.formData();
-        const file = formData.get('file') as File | null;
+        const file = formData.get('file');
 
-        if (!file) {
+        if (!(file instanceof File)) {
             return NextResponse.json({ error: 'No file uploaded' }, { status: 400 });
+        }
+        if (file.size > MAX_ATTACHMENT_BYTES) {
+            return NextResponse.json({ error: 'Attachment exceeds 20 MB', code: 'ATTACHMENT_TOO_LARGE' }, { status: 413 });
         }
 
         const buffer = Buffer.from(await file.arrayBuffer());
@@ -36,11 +40,14 @@ export async function POST(request: NextRequest) {
         let text = '';
 
         if (fileName.endsWith('.pdf')) {
-            // 运行时延迟加载，避免构建阶段触发 pdf-parse 的 DOMMatrix 依赖
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            const pdf = require('pdf-parse');
-            const data = await pdf(buffer);
-            text = data.text;
+            // 2.x 提供实例 API；成功和解析失败都必须释放 worker/文档资源。
+            const { PDFParse } = await import('pdf-parse');
+            const parser = new PDFParse({ data: buffer });
+            try {
+                text = (await parser.getText()).text;
+            } finally {
+                await parser.destroy();
+            }
         } else if (fileName.endsWith('.docx')) {
             const result = await mammoth.extractRawText({ buffer });
             text = result.value;
@@ -56,8 +63,7 @@ export async function POST(request: NextRequest) {
 
         return NextResponse.json({ text: trimExtractedText(text) });
     } catch (error: unknown) {
-        console.error('File extraction error:', error);
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return NextResponse.json({ error: errorMessage || 'Extraction failed' }, { status: 500 });
+        console.error('File extraction failed:', error instanceof Error ? error.name : 'UnknownError');
+        return NextResponse.json({ error: 'Extraction failed', code: 'ATTACHMENT_EXTRACTION_FAILED' }, { status: 500 });
     }
 }

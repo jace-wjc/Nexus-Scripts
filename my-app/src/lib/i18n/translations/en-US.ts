@@ -2354,6 +2354,8 @@ export const enUS: Translations = {
 
     // Agent Chat
     agentChat: {
+        attachmentTooLarge: 'Attachments must be 20 MB or smaller. Compress or split the file and try again.',
+        attachmentExtractionFailed: 'Attachment extraction failed. Check the file or upload it again.',
         title: 'AI Agent',
         subtitle: 'Smart Chat Assistant · Preset Workflows',
         newChat: 'New Chat',
