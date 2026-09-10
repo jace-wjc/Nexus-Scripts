@@ -7,9 +7,21 @@ on:
     branches: [main]
     paths:
       - "fastApiProject/**"
+      - "my-app/**"
+      - "nginx/**"
+      - ".github/workflows/release-gate.yml"
+      - "docker-compose.yml"
+      - "deploy.sh"
+      - ".dockerignore"
   pull_request:
     paths:
       - "fastApiProject/**"
+      - "my-app/**"
+      - "nginx/**"
+      - ".github/workflows/release-gate.yml"
+      - "docker-compose.yml"
+      - "deploy.sh"
+      - ".dockerignore"
 
 jobs:
   release-gate:
@@ -19,7 +31,7 @@ jobs:
         image: mysql:8.0
         env:
           MYSQL_ROOT_PASSWORD: gate_ci_pw
-          MYSQL_DATABASE: db_fwos_gate
+          MYSQL_DATABASE: nexus_gate_ci
         ports:
           - 3306:3306
         options: >-
@@ -47,5 +59,32 @@ jobs:
           DB_LOCAL_PORT: "3306"
           DB_LOCAL_USER: root
           DB_LOCAL_PASSWORD: gate_ci_pw
-          DB_LOCAL_DATABASE: db_fwos_gate
+          DB_LOCAL_DATABASE: nexus_gate_ci
+          NEXUS_MYSQL_TEST_ISOLATED: "1"
+          RECRUITMENT_TEST_SEED: "20260910"
         run: bash scripts/run_release_gate.sh
+
+  frontend-gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: my-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: my-app/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck -- --incremental false
+      - run: node --test 'src/**/*.test.mjs'
+      - name: Changed transport, lifecycle and resource routes lint
+        run: >-
+          npx --no-install eslint 'src/app/api/recruitment/[...path]/route.ts'
+          src/app/api/recruitment/task-events/route.ts
+          src/components/Recruitment/hooks/useTaskSSE.ts src/lib/auth.ts
+          src/app/api/extract-file/route.ts src/app/api/team-resources/logo/route.ts
+          src/app/api/ai-resources/logo-upload/route.ts
+          'src/app/api/resource-logos/[kind]/[filename]/route.ts'
+          src/app/api/system/version/route.ts src/lib/server/resourceLogoPaths.ts

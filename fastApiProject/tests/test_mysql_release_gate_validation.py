@@ -5,7 +5,7 @@
     RECRUITMENT_MYSQL_VALIDATION=1 ENVIRONMENT=local PYTHONPATH=. \
     ./venv/bin/python -m pytest tests/test_mysql_release_gate_validation.py -p no:randomly -q
 
-前置：.env 中 DB_LOCAL_* 必须指向可写的本地 MySQL 验证库，绝不可指向生产库。
+前置：仅通过 scripts/run_isolated_tests.py --mysql 运行，显式配置专用 nexus_gate_* 库；禁止 .env 回退。
 所有测试数据用 MYSQLGATE 前缀标记，测试自清理。
 
 覆盖复审验收标准：
@@ -110,6 +110,10 @@ def _score_content():
 
 @pytest.fixture()
 def mysql_db():
+    if (os.getenv("NEXUS_TEST_ISOLATED") != "1"
+            or os.getenv("NEXUS_MYSQL_TEST_ISOLATED") != "1"
+            or not os.getenv("DB_LOCAL_DATABASE", "").startswith("nexus_gate_")):
+        pytest.fail("MySQL tests require the isolated runner and a dedicated nexus_gate_* database")
     db = _new_session()
     _cleanup(db)
     try:
@@ -121,6 +125,61 @@ def mysql_db():
             pass
         _cleanup(db)
         db.close()
+
+
+def test_schema_lock_timeout_across_processes_and_reacquire(mysql_db):
+    import selectors
+    import subprocess
+    import sys
+    from app import schema_maintenance as schema
+
+    name = "nexus_gate_schema_advisory_test"
+    script = (
+        "import isolated_network; isolated_network.pytest_configure(); "
+        "from app.schema_maintenance import _MysqlAdvisoryLock; import sys\n"
+        f"with _MysqlAdvisoryLock({name!r}, timeout=1):\n"
+        " print('LOCKED', flush=True)\n sys.stdin.readline()\n"
+    )
+    process = subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            assert selector.select(timeout=15), "Lock holder did not become ready"
+            assert process.stdout.readline().strip() == "LOCKED"
+        with pytest.raises(RuntimeError, match="Could not acquire"):
+            with schema._MysqlAdvisoryLock(name, timeout=0):
+                pytest.fail("DDL body entered without the lock")
+        process.communicate(input="release\n", timeout=10)
+        assert process.returncode == 0
+        with schema._MysqlAdvisoryLock(name, timeout=0):
+            pass
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.communicate(timeout=10)
+
+
+def test_schema_ddl_failure_can_be_retried_and_remains_idempotent(mysql_db, monkeypatch):
+    from sqlalchemy import inspect, text
+    from app import schema_maintenance as schema
+
+    table = "MYSQLGATE_SCHEMA_TEST"
+    monkeypatch.setattr(schema.time, "sleep", lambda seconds: None)
+    try:
+        with schema.engine.begin() as connection:
+            connection.execute(text(f"CREATE TABLE {table} (id INT PRIMARY KEY)"))
+        with pytest.raises(RuntimeError, match="Schema"):
+            schema._add_column_if_missing(inspect(schema.engine), table, "extra",
+                f"ALTER TABLE {table} ADD COLUMN extra NONEXISTENT_TEST_TYPE", "synthetic")
+        assert {column["name"] for column in inspect(schema.engine).get_columns(table)} == {"id"}
+        for _ in range(2):
+            schema._add_column_if_missing(inspect(schema.engine), table, "extra",
+                f"ALTER TABLE {table} ADD COLUMN extra INT", "synthetic")
+        assert {column["name"] for column in inspect(schema.engine).get_columns(table)} == {"id", "extra"}
+    finally:
+        with schema.engine.begin() as connection:
+            connection.execute(text(f"DROP TABLE IF EXISTS {table}"))
 
 
 def test_terminal_finalize_survives_session_reopen(mysql_db):
@@ -467,9 +526,17 @@ def test_real_enqueue_creates_visible_task_and_run(mysql_db):
     from app.recruitment_models import (
         RecruitmentAITaskLog, RecruitmentCandidate, RecruitmentCandidateScreeningRun,
         RecruitmentPosition, RecruitmentSkill,
+        RecruitmentLLMConfig,
     )
     from app.services.recruitment_service_impl import SCREENING_FLOW_TASK_TYPE, RecruitmentService, json_dumps_safe
 
+    # Model provenance is required by real enqueue even when dispatch=False.
+    model = RecruitmentLLMConfig(
+        config_key=f"{MARKER_PREFIX}-model", task_type="default", provider="openai-compatible",
+        model_name="synthetic-no-network", base_url="http://127.0.0.1:1/v1", org_code="group",
+        is_active=True, priority=1,
+    )
+    mysql_db.add(model)
     # 独立岗位 + 初筛评估方案（不依赖库中现有数据，自建自清理）
     skill = RecruitmentSkill(
         skill_code=f"{MARKER_PREFIX}-skill", name=f"{MARKER_PREFIX}-初筛规则", org_code="group",
@@ -524,6 +591,7 @@ def test_real_enqueue_creates_visible_task_and_run(mysql_db):
         mysql_db.rollback()
         mysql_db.query(RecruitmentPosition).filter(RecruitmentPosition.id == position.id).delete()
         mysql_db.query(RecruitmentSkill).filter(RecruitmentSkill.id == skill.id).delete()
+        mysql_db.query(RecruitmentLLMConfig).filter(RecruitmentLLMConfig.id == model.id).delete()
         mysql_db.commit()
         try:
             os.unlink(_tmp.name)
