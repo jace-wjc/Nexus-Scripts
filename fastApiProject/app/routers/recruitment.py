@@ -25,6 +25,7 @@ from ..recruitment_schemas import (
     CandidateBatchStatusUpdateRequest,
     CandidateBatchUpdatePositionRequest,
     CandidateComparisonPreviewRequest,
+    CandidateDuplicateCheckRequest,
     CandidateExportRequest,
     CandidateScreenBatchCancelRequest,
     CandidateScreenBatchQueryRequest,
@@ -808,6 +809,16 @@ async def check_candidate_duplicates(
     service: RecruitmentService = Depends(get_recruitment_service),
 ):
     duplicates = service.check_candidate_duplicates(phone=phone, email=email, exclude_candidate_id=exclude_candidate_id)
+    return {"success": True, "data": duplicates}
+
+
+@recruitment_router.post("/candidates/check-duplicates")
+def check_candidate_duplicates_body(
+    payload: CandidateDuplicateCheckRequest,
+    _session: Dict[str, Any] = Depends(require_script_hub_permission("recruitment-dashboard-view")),
+    service: RecruitmentService = Depends(get_recruitment_service),
+):
+    duplicates = service.check_candidate_duplicates(**payload.model_dump())
     return {"success": True, "data": duplicates}
 
 

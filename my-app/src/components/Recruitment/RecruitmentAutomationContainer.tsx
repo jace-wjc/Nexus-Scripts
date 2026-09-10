@@ -2820,6 +2820,7 @@ export default function RecruitmentAutomationContainer({
     const [candidateListTransitionLoading, setCandidateListTransitionLoading] = useState(false);
     const [candidateDetailLoading, setCandidateDetailLoading] = useState(false);
     const [duplicateCandidates, setDuplicateCandidates] = useState<Array<{id: number; candidate_code: string; name: string; phone: string | null; email: string | null; status: string}>>([]);
+    const duplicateCheckGenerationRef = useRef(0);
     const checkedDuplicateCandidateIdRef = useRef<number | null>(null);
     const [logsLoading, setLogsLoading] = useState(false);
     const [logDetailLoading, setLogDetailLoading] = useState(false);
@@ -7228,6 +7229,8 @@ export default function RecruitmentAutomationContainer({
     }
 
     async function checkDuplicatesForCandidate(candidate: CandidateDetail | null) {
+        const generation = ++duplicateCheckGenerationRef.current;
+        const candidateId = candidate?.candidate.id;
         if (!candidate?.candidate) {
             setDuplicateCandidates([]);
             return;
@@ -7239,16 +7242,15 @@ export default function RecruitmentAutomationContainer({
             return;
         }
         try {
-            const params = new URLSearchParams();
-            if (phone) params.set("phone", phone);
-            if (email) params.set("email", email);
-            params.set("exclude_candidate_id", String(candidate.candidate.id));
-            const data = await recruitmentApi<Array<{id: number; candidate_code: string; name: string; phone: string | null; email: string | null; status: string}>>(`/candidates/check-duplicates?${params.toString()}`);
-            if (mountedRef.current) {
+            const data = await recruitmentApi<Array<{id: number; candidate_code: string; name: string; phone: string | null; email: string | null; status: string}>>("/candidates/check-duplicates", {
+                method: "POST",
+                body: JSON.stringify({ phone, email, exclude_candidate_id: candidateId }),
+            });
+            if (mountedRef.current && generation === duplicateCheckGenerationRef.current && selectedCandidateIdRef.current === candidateId) {
                 setDuplicateCandidates(data);
             }
         } catch {
-            if (mountedRef.current) {
+            if (mountedRef.current && generation === duplicateCheckGenerationRef.current && selectedCandidateIdRef.current === candidateId) {
                 setDuplicateCandidates([]);
             }
         }

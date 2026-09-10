@@ -96,6 +96,12 @@ class CandidateUpdateRequest(BaseModel):
     owner_id: Optional[str] = None
 
 
+class CandidateDuplicateCheckRequest(BaseModel):
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    exclude_candidate_id: Optional[int] = None
+
+
 class CandidateComparisonPreviewRequest(BaseModel):
     candidate_ids: List[StrictInt] = Field(..., min_length=2, max_length=4)
     expected_position_id: StrictInt = Field(..., ge=1)
