@@ -314,7 +314,7 @@ async function proxyRecruitmentRequest(
         console.info("[recruitment-proxy] upstream response", {
           method: request.method,
           path,
-          search: requestUrl.search,
+          queryKeys: Array.from(requestUrl.searchParams.keys()),
           status: response.status,
           attempt: attempt + 1,
           maxAttempts: maxRetries + 1,
@@ -366,12 +366,11 @@ async function proxyRecruitmentRequest(
       const errorInfo = {
         method: request.method,
         path,
-        search: requestUrl.search,
+        queryKeys: Array.from(requestUrl.searchParams.keys()),
         attempt: attempt + 1,
         maxAttempts: maxRetries + 1,
         elapsedMs: Date.now() - startedAt,
         errorName: error instanceof Error ? error.name : typeof error,
-        errorMessage: error instanceof Error ? error.message : String(error),
         ...(shouldRetry ? {retryDelayMs: 500 * Math.pow(2, attempt)} : {}),
       };
       if (shouldRetry) {
