@@ -54,16 +54,33 @@ class _MysqlAdvisoryLock:
         if not self._active:
             return self
         self._conn = engine.connect()
-        self._conn.execute(text(f"SELECT GET_LOCK('{self._lock_name}', {self._timeout})"))
+        try:
+            acquired = self._conn.execute(
+                text("SELECT GET_LOCK(:name, :timeout)"),
+                {"name": self._lock_name, "timeout": self._timeout},
+            ).scalar()
+            if acquired != 1:
+                raise RuntimeError(f"Could not acquire schema lock: {self._lock_name}")
+        except Exception:
+            self._conn.invalidate()
+            self._conn.close()
+            self._conn = None
+            raise
         return self
 
     def __exit__(self, *_):
         if not self._active or self._conn is None:
             return
         try:
-            self._conn.execute(text(f"SELECT RELEASE_LOCK('{self._lock_name}')"))
-        except Exception:
-            pass
+            released = self._conn.execute(
+                text("SELECT RELEASE_LOCK(:name)"), {"name": self._lock_name},
+            ).scalar()
+            if released != 1:
+                self._conn.invalidate()
+                logger.warning("Schema lock release was not confirmed; connection discarded: %s", self._lock_name)
+        except Exception as exc:
+            self._conn.invalidate()
+            logger.warning("Schema lock release failed; connection discarded: %s", type(exc).__name__)
         finally:
             self._conn.close()
             self._conn = None
@@ -89,7 +106,7 @@ def _add_column_if_missing(
         except Exception as e:
             if attempt == 2:
                 logger.warning("Could not inspect columns for %s: %s", table_name, e)
-                return
+                raise RuntimeError(f"Schema column inspection failed: {table_name}.{column_name}") from e
             time.sleep(1)
             try:
                 inspector.clear_cache()
@@ -105,7 +122,7 @@ def _add_column_if_missing(
         except Exception as e:
             if attempt == 2:
                 logger.warning("Could not execute DDL on %s: %s", table_name, e)
-                return
+                raise RuntimeError(f"Schema column creation failed: {table_name}.{column_name}") from e
             time.sleep(1)
     try:
         inspector.clear_cache()
@@ -128,7 +145,7 @@ def _add_index_if_missing(
         except Exception as e:
             if attempt == 2:
                 logger.warning("Could not inspect indexes for %s: %s", table_name, e)
-                return
+                raise RuntimeError(f"Schema index inspection failed: {table_name}.{index_name}") from e
             time.sleep(1)
             try:
                 inspector.clear_cache()
@@ -144,7 +161,7 @@ def _add_index_if_missing(
         except Exception as e:
             if attempt == 2:
                 logger.warning("Could not create index %s on %s: %s", index_name, table_name, e)
-                return
+                raise RuntimeError(f"Schema index creation failed: {table_name}.{index_name}") from e
             time.sleep(1)
     try:
         inspector.clear_cache()
