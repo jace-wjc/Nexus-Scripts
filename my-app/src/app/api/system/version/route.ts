@@ -23,6 +23,9 @@ function fallbackBuildInfo(): SystemBuildInfo {
 }
 
 async function getBuildInfo(): Promise<SystemBuildInfo> {
+  if (process.env.NODE_ENV !== 'production') {
+    return fallbackBuildInfo();
+  }
   if (!buildInfoPromise) {
     buildInfoPromise = readFile(join(process.cwd(), "public", "build-info.json"), "utf8")
       .then((raw) => parseSystemBuildInfo(JSON.parse(raw)) || fallbackBuildInfo())
