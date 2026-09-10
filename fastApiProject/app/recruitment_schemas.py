@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, StrictInt, field_validator
 
@@ -230,7 +230,7 @@ class SkillContentGenerateRequest(BaseModel):
 class PublishTaskCreateRequest(BaseModel):
     position_id: int = Field(..., ge=1)
     target_platform: str = Field(..., min_length=1, max_length=80)
-    mode: str = Field("mock", min_length=1, max_length=50)
+    mode: Literal["mock"] = "mock"
 
 
 class InterviewQuestionGenerateRequest(BaseModel):

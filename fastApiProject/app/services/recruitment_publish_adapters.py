@@ -102,10 +102,11 @@ class ZhilianPublishAdapter(MockPublishAdapter):
 
 
 def build_publish_adapter(target_platform: str, mode: str = "mock") -> JobPublishAdapter:
+    if mode != "mock":
+        raise ValueError("Only mock publishing is supported")
     normalized = (target_platform or "").strip().lower()
     if normalized in {"boss", "boss直聘", "boss_zhipin"}:
         return BossPublishAdapter()
     if normalized in {"zhilian", "智联", "智联招聘"}:
         return ZhilianPublishAdapter()
     return MockPublishAdapter()
-
