@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
@@ -26,6 +26,7 @@ from ..script_hub_session import require_script_hub_permission
 from ..services import MobileTaskService
 from ..services.ai_service import AiService
 from ..services.script_hub_audit_service import write_audit_log
+from ..upload_paths import safe_upload_destination, safe_upload_relative_path
 
 logger = logging.getLogger(__name__)
 workbench_router = APIRouter(tags=["工作台工具"])
@@ -69,6 +70,14 @@ async def process_ocr_upload(
 ):
     request_id = str(uuid.uuid4())
     logger.info(f"[OCR上传模式] 开始 | 请求ID: {request_id}")
+    # 在读取内容、记录审计或创建临时目录前验证全部路径，保留合法目录层级。
+    try:
+        safe_upload_relative_path(excel_file.filename or "upload.xlsx")
+        for image in image_files:
+            if image.filename:
+                safe_upload_relative_path(image.filename)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid upload path") from None
     logger.info(f"[OCR上传模式] 参数: Excel={excel_file.filename}, 图片数={len(image_files)}, 模式={mode}")
     if http_request is not None:
         write_audit_log(
@@ -106,7 +115,7 @@ async def process_ocr_upload(
             source_folder = temp_path / "source_images"
             source_folder.mkdir()
 
-            excel_path = temp_path / excel_filename
+            excel_path = safe_upload_destination(temp_path, "input" + Path(excel_filename).suffix.lower())
             with open(excel_path, "wb") as file_handle:
                 file_handle.write(excel_content)
 
@@ -124,7 +133,7 @@ async def process_ocr_upload(
                     yield json.dumps({"type": "log", "content": f"原始路径: {original_path} → 映射为: {new_path}"}, ensure_ascii=False) + "\n"
                     first_folder_logged = True
 
-                target_path = source_folder / new_path
+                target_path = safe_upload_destination(source_folder, new_path)
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(target_path, "wb") as file_handle:
                     file_handle.write(image_data["content"])
