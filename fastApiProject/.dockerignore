@@ -18,3 +18,16 @@ htmlcov/
 
 # 忽略 Git 文件夹
 .git
+
+# Runtime-only configuration and generated business files
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+uploads/
+outputs/
+app/uploads/
+app/outputs/
+logs/
+*.log

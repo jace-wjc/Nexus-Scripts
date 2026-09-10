@@ -29,3 +29,10 @@ uploads/
 # Cache
 *.cache
 .cache/
+
+# Runtime credentials are injected by Compose, never copied into image layers.
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example

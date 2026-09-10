@@ -1,6 +1,11 @@
 @echo off
 setlocal
 
+if not defined AGENT_API_KEY (
+    echo AGENT_API_KEY must be provided by the launching environment.
+    exit /b 1
+)
+
 :: 自动获取当前脚本所在目录
 set "ROOT=%~dp0"
 
@@ -22,7 +27,7 @@ echo.
 
 wt --title "Frontend" -d "%ROOT%\my-app" cmd /k "npm run dev" ^
 ; nt --title "Backend Main" -d "%ROOT%\fastApiProject" powershell -NoExit -Command "& '.\venv\Scripts\Activate.ps1' \; python run.py --reload" ^
-; nt --title "Agent Service" -d "%ROOT%\fastApiProject" powershell -NoExit -Command "& '.\venv\Scripts\Activate.ps1' \; $env:AGENT_API_KEY = 'NjBkZGEwNjYtMmVmZS00ZjNlLTg1MTktOTM2Yzk4OGY5NTMx' \; $env:AGENT_PORT = '9200' \; python server_agent.py"
+; nt --title "Agent Service" -d "%ROOT%\fastApiProject" powershell -NoExit -Command "& '.\venv\Scripts\Activate.ps1' \; $env:AGENT_PORT = '9200' \; python server_agent.py"
 
 echo.
 echo All services started!
