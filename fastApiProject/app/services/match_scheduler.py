@@ -373,9 +373,14 @@ class FairMatchScheduler:
 
     async def stop(self):
         self.running = False
+        # Stop the underlying provider requests as well as the asyncio wrappers.
+        with self._state_lock:
+            controls = list(self._task_controls.values())
         self._has_tasks.set()  # 唤醒所有 worker 让其退出
         for w in self._workers:
             w.cancel()
+        for control in controls:
+            await asyncio.to_thread(control.cancel)
         await asyncio.gather(*self._workers, return_exceptions=True)
         logger.info("FairMatchScheduler stopped")
 

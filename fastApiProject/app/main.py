@@ -1,10 +1,13 @@
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 import logging
 import asyncio
 import os
@@ -61,6 +64,27 @@ logger = logging.getLogger(__name__)
 APP_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = APP_ROOT / "static"
 
+
+@asynccontextmanager
+async def application_lifespan(application: FastAPI):
+    application.state.recruitment_ready = False
+    application.state.background_tasks = []
+    try:
+        await startup_event()
+        application.state.recruitment_ready = True
+        yield
+    finally:
+        application.state.recruitment_ready = False
+        tasks = application.state.background_tasks
+        for task in tasks:
+            task.cancel()
+        try:
+            await scheduler.stop()
+        finally:
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+
 # 创建FastAPI应用
 app = FastAPI(
     title=settings.API_TITLE,
@@ -68,8 +92,26 @@ app = FastAPI(
     description=settings.DESCRIPTION,
     # 关闭默认的docs和redoc，使用自定义路由
     docs_url=None,
-    redoc_url=None
+    redoc_url=None,
+    lifespan=application_lifespan,
 )
+
+
+@app.get("/health/live", include_in_schema=False)
+def health_live():
+    return {"status": "alive"}
+
+
+@app.get("/health/ready", include_in_schema=False)
+def health_ready():
+    if not getattr(app.state, "recruitment_ready", False) or not scheduler.running:
+        return JSONResponse({"status": "not_ready"}, status_code=503)
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+    except Exception:
+        return JSONResponse({"status": "not_ready"}, status_code=503)
+    return {"status": "ready"}
 
 
 def _request_timing_log_enabled() -> bool:
@@ -171,6 +213,7 @@ async def _init_match_scheduler() -> None:
                      len(key_configs), scheduler.stats().get("worker_count", 0))
     except Exception as exc:
         logger.error("Failed to init match scheduler: %s", exc, exc_info=True)
+        raise
     finally:
         db.close()
 
@@ -193,7 +236,6 @@ def _warmup_recruitment_pdf_ocr() -> None:
         logger.warning("Recruitment PDF OCR warmup skipped or failed: %s", exc, exc_info=True)
 
 
-@app.on_event("startup")
 async def startup_event():
     """启动时初始化"""
     # 招聘模块的事件总线/匹配调度器/限流器均为进程内单例，多 worker 部署会导致
@@ -224,10 +266,11 @@ async def startup_event():
         await _init_match_scheduler()
     except Exception as exc:
         logger.error("Failed to initialize schemas or recruitment queue on startup: %s", exc, exc_info=True)
+        raise
     logger.info("Starting background tasks...")
-    asyncio.create_task(background_monitoring_loop())
+    app.state.background_tasks.append(asyncio.create_task(background_monitoring_loop()))
     if os.getenv("RECRUITMENT_PRELOAD_PDF_OCR", "1").strip() != "0":
-        asyncio.create_task(asyncio.to_thread(_warmup_recruitment_pdf_ocr))
+        app.state.background_tasks.append(asyncio.create_task(asyncio.to_thread(_warmup_recruitment_pdf_ocr)))
 
 async def background_monitoring_loop():
     """后台监控循环"""
