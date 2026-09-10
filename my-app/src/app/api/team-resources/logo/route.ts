@@ -4,10 +4,11 @@ import path from 'path';
 import sharp from 'sharp';
 
 import { requireFreshScriptHubPermission } from '@/lib/server/scriptHubSession';
+import { getResourceLogoDirectory } from '@/lib/server/resourceLogoPaths';
 
 export const dynamic = 'force-dynamic';
 
-const LOGOS_DIR = path.join(process.cwd(), 'public', 'team-logos');
+const LOGOS_DIR = getResourceLogoDirectory('team-logos');
 
 // 校验 groupId 格式，防止路径遍历
 function isValidGroupId(groupId: string): boolean {
@@ -54,6 +55,8 @@ export async function POST(request: NextRequest) {
         await sharp(imageBuffer)
             .webp({ quality: 85 })
             .toFile(outputPath);
+        const tombstone = `${outputPath}.deleted`;
+        if (fs.existsSync(tombstone)) fs.unlinkSync(tombstone);
 
         const logoUrl = `/team-logos/${groupId}.webp`;
 
@@ -92,6 +95,9 @@ export async function DELETE(request: NextRequest) {
         if (fs.existsSync(logoPath)) {
             fs.unlinkSync(logoPath);
         }
+        // Prevent the read-only image bundled with an older release from reappearing.
+        ensureDir();
+        fs.writeFileSync(`${logoPath}.deleted`, '');
 
         return NextResponse.json({
             success: true,

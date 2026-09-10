@@ -55,6 +55,8 @@ ENV NEXT_TELEMETRY_DISABLED 1
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
+RUN mkdir -p /app/runtime-logos/team-logos /app/runtime-logos/ai-logos \
+    && chown -R nextjs:nodejs /app/runtime-logos
 
 # 关键：复制 public 目录 (包含 logo)
 COPY --from=builder --chown=nextjs:nodejs /app/my-app/public ./public

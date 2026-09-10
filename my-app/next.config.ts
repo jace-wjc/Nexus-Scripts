@@ -68,6 +68,15 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_BUILD_TIME: buildInfo.builtAt,
   },
   generateBuildId: async () => buildInfo.buildId,
+  // Runtime uploads are served dynamically, including files created after startup.
+  rewrites: async () => ({
+    beforeFiles: [
+      { source: '/team-logos/:filename', destination: '/api/resource-logos/team-logos/:filename' },
+      { source: '/ai-logos/:filename', destination: '/api/resource-logos/ai-logos/:filename' },
+    ],
+    afterFiles: [],
+    fallback: [],
+  }),
 
   // 性能优化：优化包导入
   serverExternalPackages: ['pdf-parse'],

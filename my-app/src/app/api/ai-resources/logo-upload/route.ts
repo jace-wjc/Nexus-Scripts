@@ -3,8 +3,9 @@ import fs from 'fs';
 import path from 'path';
 
 import { requireFreshScriptHubPermission } from '@/lib/server/scriptHubSession';
+import { getResourceLogoDirectory } from '@/lib/server/resourceLogoPaths';
 
-const LOGOS_DIR = path.join(process.cwd(), 'public', 'ai-logos');
+const LOGOS_DIR = getResourceLogoDirectory('ai-logos');
 
 function isValidResourceId(id: string): boolean {
     return /^[a-zA-Z0-9_-]+$/.test(id);

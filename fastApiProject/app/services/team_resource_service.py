@@ -301,7 +301,8 @@ class TeamResourceService:
         # 4. 写入文件
         project_root = Path(__file__).parent.parent.parent.parent
         # 注意文件名改回 .enc.json
-        json_path = project_root / "my-app" / "data" / "team-resources.enc.json"
+        backup_root = os.getenv("TEAM_RESOURCES_BACKUP_DIR")
+        json_path = (Path(backup_root) if backup_root else project_root / "my-app" / "data") / "team-resources.enc.json"
         
         # 确保目录存在
         json_path.parent.mkdir(parents=True, exist_ok=True)
