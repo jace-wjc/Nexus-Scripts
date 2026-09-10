@@ -56,6 +56,30 @@ function resolveRecruitmentPermission(path: string, method: string): string | st
     return "recruitment-assistant-view";
   }
 
+  if (
+    (normalizedMethod === "POST" && (
+      /^candidates\/\d+\/(parse|screen(?:\/start)?|score|interview-questions(?:\/(preview-stream|start))?)$/.test(path)
+      || /^candidates\/screen\/(batch-start|batch\/(start|query|cancel)|visible\/cancel)$/.test(path)
+      || /^ai-task-logs\/\d+\/cancel$/.test(path)
+      || /^chat(?:\/(start|stream))?$/.test(path)
+    ))
+    || /^interview-questions\/\d+\/download$/.test(path)
+  ) {
+    return "recruitment-process-execute";
+  }
+
+  if (path === "candidates/check-duplicates") {
+    return "recruitment-dashboard-view";
+  }
+
+  if (path === "candidates/pending-match") {
+    return "recruitment-candidate-manage";
+  }
+
+  if (/^positions\/\d+$/.test(path) && normalizedMethod === "PATCH") {
+    return ["recruitment-position-manage", "recruitment-skill-bind"];
+  }
+
   if (path === "candidates/talent-pool") {
     return normalizedMethod === "GET" || normalizedMethod === "HEAD"
       ? "recruitment-talent-pool-view"
@@ -111,7 +135,7 @@ function resolveRecruitmentPermission(path: string, method: string): string | st
   }
 
   if (path === "interview-availability") {
-    return "recruitment-interview-manage";
+    return ["recruitment-candidate-manage", "recruitment-interview-manage"];
   }
 
   if (path === "interviews/my") {
@@ -122,7 +146,11 @@ function resolveRecruitmentPermission(path: string, method: string): string | st
     return RECRUITMENT_INTERVIEW_SCOPED_PERMISSIONS;
   }
 
-  if (path === "interviews" || path === "interviews/interviewers") {
+  if (path === "interviews/interviewers") {
+    return ["recruitment-candidate-manage", "recruitment-interview-manage"];
+  }
+
+  if (path === "interviews") {
     return "recruitment-interview-manage";
   }
 
@@ -133,7 +161,7 @@ function resolveRecruitmentPermission(path: string, method: string): string | st
   if (path === "interview-schedules" || path.startsWith("interview-schedules/")) {
     return normalizedMethod === "GET" || normalizedMethod === "HEAD"
       ? ["recruitment-interview-view", "recruitment-interview-manage"]
-      : "recruitment-interview-manage";
+      : ["recruitment-candidate-manage", "recruitment-interview-manage"];
   }
 
   if (path === "resume-mail-dispatches/send") {
@@ -145,6 +173,9 @@ function resolveRecruitmentPermission(path: string, method: string): string | st
   }
 
   if (path === "resource-governance" || path.startsWith("resource-governance/")) {
+    if (normalizedMethod === "POST" && /^resource-governance\/[^/]+\/\d+\/copy$/.test(path)) {
+      return ["recruitment-skill-manage", "recruitment-llm-config-manage", "recruitment-mail-sender-manage", "recruitment-mail-config-manage"];
+    }
     return "resource-sharing-manage";
   }
 
@@ -171,6 +202,12 @@ function resolveRecruitmentPermission(path: string, method: string): string | st
   }
 
   if (normalizedMethod !== "GET" && normalizedMethod !== "HEAD") {
+    if (path === "publish-tasks") {
+      return "recruitment-position-manage";
+    }
+    if (/^(follow-ups|offers)(?:\/\d+)?$/.test(path) || /^resume-files\/\d+$/.test(path)) {
+      return "recruitment-candidate-manage";
+    }
     if (path.startsWith("positions")) {
       return "recruitment-position-manage";
     }
