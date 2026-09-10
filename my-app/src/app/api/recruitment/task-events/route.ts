@@ -20,19 +20,30 @@ export async function GET(request: NextRequest) {
   // 获取原始请求的 headers
   const authorization = request.headers.get("authorization");
 
-  // 直接透传 SSE 流，不做任何处理
-  const backendResponse = await fetch(backendUrl, {
-    headers: {
-      Authorization: authorization || "",
-      Accept: "text/event-stream",
-      "Cache-Control": "no-cache",
-    },
-    // 不设置 signal，让 SSE 保持长连接
-    // 客户端断开时会自动终止
-  });
+  let backendResponse: Response;
+  try {
+    backendResponse = await fetch(backendUrl, {
+      headers: {
+        Authorization: authorization || "",
+        Accept: "text/event-stream",
+        "Cache-Control": "no-cache",
+      },
+      signal: request.signal,
+      cache: "no-store",
+    });
+  } catch {
+    return Response.json(
+      { error: request.signal.aborted ? "request_cancelled" : "sse_upstream_unavailable" },
+      { status: request.signal.aborted ? 499 : 503 },
+    );
+  }
 
   if (!backendResponse.ok) {
-    return new Response("Backend SSE unavailable", { status: 502 });
+    await backendResponse.body?.cancel();
+    return Response.json(
+      { error: "sse_upstream_unavailable" },
+      { status: backendResponse.status },
+    );
   }
 
   if (!backendResponse.body) {

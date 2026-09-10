@@ -75,6 +75,12 @@ export async function authenticatedFetch(input: RequestInfo | URL, init: Authent
     const { timeoutMs, signal: upstreamSignal, ...rest } = init;
     const headers = getScriptHubAuthHeaders(rest.headers);
 
+    // A stream is still using its signal after fetch resolves its headers.
+    // Forward the caller's signal directly when no timeout wrapper is needed.
+    if (!(typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0)) {
+        return fetch(input, { ...rest, headers, signal: upstreamSignal });
+    }
+
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let didTimeout = false;
     const controller = new AbortController();

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import { authenticatedFetch } from "@/lib/auth";
+import { authenticatedFetch, getStoredScriptHubSession } from "@/lib/auth";
 import type { CandidateSummary } from "@/lib/recruitment-api";
 
 type ListenerEntry = {
@@ -8,6 +8,7 @@ type ListenerEntry = {
 };
 
 type SharedSSEConnection = {
+  sessionToken: string;
   listeners: Map<symbol, ListenerEntry>;
   abortController: AbortController | null;
   reconnectTimer: number | null;
@@ -20,10 +21,11 @@ type SharedSSEConnection = {
 const sharedSSEConnections = new Map<string, SharedSSEConnection>();
 const SSE_CLOSE_GRACE_MS = 250;
 
-function getSharedConnection(baseUrl: string): SharedSSEConnection {
-  let connection = sharedSSEConnections.get(baseUrl);
+function getSharedConnection(connectionKey: string, sessionToken: string): SharedSSEConnection {
+  let connection = sharedSSEConnections.get(connectionKey);
   if (!connection) {
     connection = {
+      sessionToken,
       listeners: new Map(),
       abortController: null,
       reconnectTimer: null,
@@ -32,7 +34,7 @@ function getSharedConnection(baseUrl: string): SharedSSEConnection {
       isConnecting: false,
       hasConnectedOnce: false,
     };
-    sharedSSEConnections.set(baseUrl, connection);
+    sharedSSEConnections.set(connectionKey, connection);
   }
   return connection;
 }
@@ -47,7 +49,8 @@ function dispatchSharedEvent(
 }
 
 async function ensureSharedConnection(baseUrl: string, connection: SharedSSEConnection) {
-  if (connection.isConnecting || connection.abortController || connection.listeners.size === 0) {
+  if (connection.isConnecting || connection.abortController || connection.listeners.size === 0
+    || getStoredScriptHubSession()?.token !== connection.sessionToken) {
     return;
   }
 
@@ -55,16 +58,24 @@ async function ensureSharedConnection(baseUrl: string, connection: SharedSSEConn
   const abortController = new AbortController();
   connection.abortController = abortController;
   const wasReconnected = connection.hasConnectedOnce;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let shouldReconnect = true;
 
   try {
     const response = await authenticatedFetch(`${baseUrl}/task-events`, {
       headers: { Accept: "text/event-stream" },
       signal: abortController.signal,
     });
-    if (!response.body) {
+    if (!response.ok || !response.headers.get("content-type")?.includes("text/event-stream")) {
+      shouldReconnect = response.status !== 401 && response.status !== 403;
+      await response.body?.cancel();
       return;
     }
-    const reader = response.body.getReader();
+    if (!response.body || abortController.signal.aborted
+      || getStoredScriptHubSession()?.token !== connection.sessionToken) {
+      return;
+    }
+    reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     connection.reconnectDelay = 2000;
@@ -79,7 +90,8 @@ async function ensureSharedConnection(baseUrl: string, connection: SharedSSEConn
 
     while (connection.listeners.size > 0) {
       const { done, value } = await reader.read();
-      if (done) {
+      if (done || abortController.signal.aborted
+        || getStoredScriptHubSession()?.token !== connection.sessionToken) {
         break;
       }
       buffer += decoder.decode(value, { stream: true });
@@ -111,9 +123,19 @@ async function ensureSharedConnection(baseUrl: string, connection: SharedSSEConn
   } catch {
     // ignore fetch errors (network, abort, etc.)
   } finally {
+    if (reader) {
+      try {
+        await reader.cancel();
+      } catch {
+        // Cancellation may already have closed the transport.
+      }
+      reader.releaseLock();
+    }
+    abortController.abort();
     connection.isConnecting = false;
     connection.abortController = null;
-    if (connection.listeners.size === 0) {
+    if (connection.listeners.size === 0 || !shouldReconnect
+      || getStoredScriptHubSession()?.token !== connection.sessionToken) {
       if (connection.reconnectTimer) {
         window.clearTimeout(connection.reconnectTimer);
         connection.reconnectTimer = null;
@@ -172,13 +194,15 @@ export function useTaskSSE(
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
   const listenerIdRef = useRef<symbol | null>(null);
+  const sessionToken = getStoredScriptHubSession()?.token || "";
 
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || !sessionToken) {
       return;
     }
 
-    const connection = getSharedConnection(baseUrl);
+    const connectionKey = `${baseUrl}\u0000${sessionToken}`;
+    const connection = getSharedConnection(connectionKey, sessionToken);
     const listenerId = Symbol("task-sse-listener");
     listenerIdRef.current = listenerId;
 
@@ -197,7 +221,7 @@ export function useTaskSSE(
     void ensureSharedConnection(baseUrl, connection);
 
     return () => {
-      const sharedConnection = getSharedConnection(baseUrl);
+      const sharedConnection = connection;
       if (listenerIdRef.current) {
         sharedConnection.listeners.delete(listenerIdRef.current);
       }
@@ -217,8 +241,8 @@ export function useTaskSSE(
         sharedConnection.abortController = null;
         sharedConnection.isConnecting = false;
         sharedConnection.closeTimer = null;
-        sharedSSEConnections.delete(baseUrl);
+        sharedSSEConnections.delete(connectionKey);
       }, SSE_CLOSE_GRACE_MS);
     };
-  }, [enabled, baseUrl]);
+  }, [enabled, baseUrl, sessionToken]);
 }

@@ -291,6 +291,19 @@ def _filter_uploaded_resume_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, A
     return [row for row in rows if not row.get("skipped_duplicate")]
 
 
+def _load_task_event_context(session: Dict[str, Any]) -> PermissionContext:
+    with SessionLocal() as db:
+        return build_permission_context(db, session)
+
+
+def _refresh_task_event_access(request, previous_session, previous_context, refreshed_at):
+    session = require_script_hub_any_permission(RECRUITMENT_TASK_EVENT_PERMISSIONS)(request)
+    now = time.monotonic()
+    if session != previous_session or now - refreshed_at >= 25.0:
+        return session, _load_task_event_context(session), now
+    return session, previous_context, refreshed_at
+
+
 @recruitment_router.get("/task-events")
 async def stream_task_events(
     request: Request,
@@ -306,16 +319,14 @@ async def stream_task_events(
 
     # P0-5：所有会话都构建权限上下文——process-execute / log-view 用户的事件
     # 同样需要按组织可见范围过滤，不再无条件透传。
-    event_permission_context: Optional[PermissionContext] = None
-    db = SessionLocal()
-    try:
-        event_permission_context = build_permission_context(db, _session)
-    finally:
-        db.close()
+    event_permission_context = await run_in_threadpool(_load_task_event_context, _session)
 
     subscription_id, q = TaskEventBus.subscribe(token)
 
     async def event_generator():
+        stream_session = _session
+        stream_context = event_permission_context
+        refreshed_at = time.monotonic()
         try:
             hello_payload = json.dumps({"type": "hello"}, ensure_ascii=False)
             yield f"data: {hello_payload}\n\n"
@@ -324,11 +335,23 @@ async def stream_task_events(
                     break
                 try:
                     data = await asyncio.wait_for(q.get(), timeout=25.0)
-                    scoped_event = _task_event_for_session(data, _session, event_permission_context)
+                except asyncio.TimeoutError:
+                    data = None
+                try:
+                    stream_session, stream_context, refreshed_at = await run_in_threadpool(
+                        _refresh_task_event_access, request, stream_session, stream_context, refreshed_at,
+                    )
+                except HTTPException:
+                    break
+                except Exception as exc:
+                    logger.warning("Task event authorization unavailable: %s", type(exc).__name__)
+                    break
+                if data is None:
+                    yield ": heartbeat\n\n"
+                else:
+                    scoped_event = _task_event_for_session(data, stream_session, stream_context)
                     if scoped_event is not None:
                         yield f"data: {scoped_event}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": heartbeat\n\n"
         finally:
             TaskEventBus.unsubscribe(token, subscription_id)
 
