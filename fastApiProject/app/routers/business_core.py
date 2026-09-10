@@ -59,12 +59,12 @@ async def process_settlement(
     request_id = str(uuid.uuid4())
     start_time = _time.time()
     logger.info(f"[结算处理] 开始 | 请求ID: {request_id}")
-    logger.info(f"[结算处理] 参数: 企业数量={len(request.enterprises)}, 并发={request.concurrent}")
+    logger.info(f"[结算处理] 参数: 企业数量={len(request.enterprises)}, 并发={request.concurrent_workers}")
 
     try:
         result = service.process_settlement(request)
         elapsed = round(_time.time() - start_time, 2)
-        logger.info(f"[结算处理] 完成 | 请求ID: {request_id} | 耗时: {elapsed}秒 | 成功: {result.success}")
+        logger.info(f"[结算处理] 完成 | 请求ID: {request_id} | 耗时: {elapsed}秒 | 成功: {result.get('success', False)}")
         write_audit_log(
             db,
             actor=session,
@@ -78,7 +78,7 @@ async def process_settlement(
                 "concurrent_workers": request.concurrent_workers,
                 "interval_seconds": request.interval_seconds,
                 "environment": request.environment,
-                "success": bool(getattr(result, "success", False)),
+                "success": bool(result.get("success", False)),
             },
         )
         return result
