@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pymysql.cursors import DictCursor
 
 from ..config import settings
@@ -49,7 +49,7 @@ def calc_continuous_month(months: list[int], current_month: int) -> int:
 @settlement_sim_router.post("/settlement-sim/execute", response_model=SettlementSimResponse)
 async def execute_settlement_sim(
     request: SettlementSimRequest,
-    _session=None,
+    _session: dict = Depends(require_script_hub_permission("settlement-sim")),
 ):
     """
     执行结算状态模拟操作
@@ -62,6 +62,8 @@ async def execute_settlement_sim(
     """
     request_id = str(uuid.uuid4())
     logger.info(f"[结算模拟] 开始 | 请求ID: {request_id} | mode: {request.mode}")
+    logger.info("[结算模拟审计] request_id=%s actor_id=%s mode=%s environment=%s phase=started",
+                request_id, _session.get("id"), request.mode, request.env)
 
     # 校验必填字段
     if request.mode in ("batch_no", "batch_no_tax") and not request.batch_no:
@@ -289,6 +291,8 @@ async def execute_settlement_sim(
                     raise HTTPException(status_code=400, detail=f"未知mode: {request.mode}")
 
         logger.info(f"[结算模拟] 完成 | 请求ID: {request_id} | 影响行数: {affected_rows}")
+        logger.info("[结算模拟审计] request_id=%s actor_id=%s phase=committed affected_rows=%s",
+                    request_id, _session.get("id"), affected_rows)
         return SettlementSimResponse(
             success=True,
             affected_rows=affected_rows,
@@ -299,5 +303,7 @@ async def execute_settlement_sim(
     except HTTPException:
         raise
     except Exception as exc:
+        logger.error("[结算模拟审计] request_id=%s actor_id=%s phase=failed error_type=%s",
+                     request_id, _session.get("id"), type(exc).__name__)
         logger.error(f"[结算模拟] 失败 | 请求ID: {request_id} | 错误: {str(exc)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"执行失败: {str(exc)}")
