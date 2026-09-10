@@ -1709,31 +1709,18 @@ def _log_strict_json_recovery_context(
     prompt_snapshot: str,
     full_request_snapshot: str,
 ) -> None:
-    provider_payload = getattr(exc, "provider_payload", None)
-    debug_meta = getattr(exc, "debug_meta", None)
-    try:
-        provider_payload_text = json.dumps(provider_payload, ensure_ascii=False, indent=2, default=str)
-    except Exception:
-        provider_payload_text = str(provider_payload)
-    try:
-        debug_meta_text = json.dumps(debug_meta, ensure_ascii=False, indent=2, default=str)
-    except Exception:
-        debug_meta_text = str(debug_meta)
+    # Full input/output remains in the access-controlled task audit, never in
+    # ordinary server logs (provider errors may themselves contain resume text).
+    error_code = getattr(exc, "error_code", "json_parse_failed")
+    if error_code not in {"json_parse_failed", "invalid_provider_payload", "empty_response", "invalid_json_variant_conflict"}:
+        error_code = "json_parse_failed"
     logger.warning(
-        "[STRICT_JSON_RECOVERY] task=%s hit malformed JSON before retry\n"
-        "ERROR: %s\n"
-        "PROMPT_SNAPSHOT:\n%s\n"
-        "FULL_REQUEST_SNAPSHOT:\n%s\n"
-        "RAW_RESPONSE_TEXT:\n%s\n"
-        "PROVIDER_PAYLOAD:\n%s\n"
-        "DEBUG_META:\n%s",
+        "[STRICT_JSON_RECOVERY] task=%s code=%s prompt_chars=%d request_chars=%d response_chars=%d",
         task_type,
-        exc,
-        prompt_snapshot,
-        full_request_snapshot,
-        getattr(exc, "raw_response_text", "") or "",
-        provider_payload_text,
-        debug_meta_text,
+        error_code,
+        len(prompt_snapshot),
+        len(full_request_snapshot),
+        len(getattr(exc, "raw_response_text", "") or ""),
     )
 
 
@@ -3465,7 +3452,7 @@ class RecruitmentAIGateway:
                     logger.warning(
                         "Recruitment JSON task %s hit malformed strict JSON, retrying once with the same prompt: %s",
                         task_type,
-                        exc,
+                        type(exc).__name__,
                     )
                     continue
                 if standard_retry_attempts < max_retries and _is_retryable_error(exc):
@@ -3475,7 +3462,7 @@ class RecruitmentAIGateway:
                         "Recruitment JSON task %s hit retryable request-level error, retrying HTTP call in %.1fs: %s",
                         task_type,
                         sleep_seconds,
-                        exc,
+                        type(exc).__name__,
                     )
                     if cancel_control:
                         if cancel_control.wait(sleep_seconds):
@@ -3483,7 +3470,7 @@ class RecruitmentAIGateway:
                     else:
                         time.sleep(sleep_seconds)
                     continue
-                logger.warning("Recruitment JSON task %s failed after request-level retries: %s", task_type, exc)
+                logger.warning("Recruitment JSON task %s failed after request-level retries: %s", task_type, type(exc).__name__)
                 break
         if fallback_builder is None:
             if isinstance(last_error, RecruitmentAIScreeningTotalTimeoutError):

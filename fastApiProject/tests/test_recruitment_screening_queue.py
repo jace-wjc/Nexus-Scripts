@@ -1840,7 +1840,10 @@ def test_generate_json_strict_json_retries_once_for_resume_score_and_then_succee
     assert payload["response_debug"]["strict_json_recovery_retry_count"] == 1
     assert "strict JSON 首次解析失败，已自动进行一次同 prompt 恢复重试" in payload["warnings"]
     assert any("[STRICT_JSON_RECOVERY]" in str(call.args[0]) for call in log_warning.call_args_list)
-    assert any('{"total_score":7.8 "match_percent":78}' in str(call.args) for call in log_warning.call_args_list)
+    assert all('{"total_score":7.8 "match_percent":78}' not in str(call.args) for call in log_warning.call_args_list)
+    assert payload["raw_response_text"] == '{"total_score":7.8,"match_percent":78}'
+    assert "SYSTEM" in payload["prompt_snapshot"]
+    assert "USER" in payload["prompt_snapshot"]
 
 
 def test_parse_llm_json_response_repairs_unescaped_inner_quotes():
