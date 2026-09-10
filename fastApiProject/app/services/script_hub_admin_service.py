@@ -1,6 +1,6 @@
 import secrets
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from sqlalchemy.orm.exc import StaleDataError
@@ -1948,7 +1948,7 @@ def soft_delete_organization(
 
     row.is_deleted = True
     row.is_active = False
-    row.deleted_at = datetime.utcnow()
+    row.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     db.commit()
     db.refresh(row)
@@ -2354,7 +2354,7 @@ def delete_rbac_user(
     user.is_active = False
     user.team_resources_access_enabled = False
     user.is_deleted = True
-    user.deleted_at = datetime.utcnow()
+    user.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     db.commit()
     invalidate_script_hub_session_refresh_cache(user.user_code)
@@ -2385,7 +2385,7 @@ def delete_rbac_role(
 
     role.is_active = False
     role.is_deleted = True
-    role.deleted_at = datetime.utcnow()
+    role.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     db.commit()
     return {

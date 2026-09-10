@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -213,7 +213,7 @@ def authenticate_access_key(db: Session, access_key: str) -> Optional[Dict[str, 
     if not verify_access_key(access_key, user.access_key_salt, user.access_key_hash):
         return None
 
-    user.last_login_at = datetime.utcnow()
+    user.last_login_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
     db.refresh(user)
     return serialize_user_session(db, user)
