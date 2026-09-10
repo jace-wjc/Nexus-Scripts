@@ -18,8 +18,8 @@
 | 依赖 | 版本 | Mac 安装 | Windows 安装 |
 |------|------|----------|-------------|
 | Python | 3.11 - 3.12 | `brew install python@3.12` 或 [官网下载](https://www.python.org/downloads/) | [官网下载](https://www.python.org/downloads/) 或 [Python Releases for Windows](https://www.python.org/ftp/python/) |
-| Node.js | 18+ | `brew install node@18` 或 [官网下载](https://nodejs.org/) | [官网下载](https://nodejs.org/)（Windows Installer .msi） |
-| pnpm | 最新 | `npm install -g pnpm` | `npm install -g pnpm` |
+| Node.js | ≥22.3.0，部署使用 22.x | `brew install node@22` 或 [官网下载](https://nodejs.org/) | [官网下载](https://nodejs.org/)（Windows Installer .msi） |
+| npm | ≥10，CI/Docker 使用 npm ci | 随 Node.js 安装 | 随 Node.js 安装 |
 | MySQL | 8.0+ | `brew install mysql` 或 [官网下载](https://dev.mysql.com/downloads/mysql/) | [MySQL Installer](https://dev.mysql.com/downloads/installer/) |
 
 ---
@@ -56,8 +56,8 @@ pip install -r requirements.txt
 
 ```bash
 cd ../my-app
-# 确保已开梯子，否则 pnpm install 可能极慢或失败
-pnpm install
+# 使用 Docker / CI 相同的依赖锁定方式
+npm ci
 ```
 
 ### 第三步：配置环境变量
@@ -128,7 +128,7 @@ python run.py
 **另开终端，启动前端：**
 ```bash
 cd my-app
-pnpm dev
+npm run dev
 ```
 > 前端地址：http://localhost:3000
 
@@ -163,12 +163,10 @@ pip install -r requirements.txt
 - **Windows**: 打开"服务"应用，找到 MySQL 并启动；或 CMD 运行 `net start mysql`
 - 确认 `.env` 里 `DB_LOCAL_HOST`、`DB_LOCAL_PASSWORD` 正确
 
-**Q: 前端 `pnpm install` 失败**
-```bash
-pnpm store prune
-rm -rf node_modules pnpm-lock.yaml
-pnpm install
-```
+**Q: 前端安装依赖失败**
+先检查 Node/npm 版本、网络与 registry，再重试 `npm ci`。保留 `package-lock.json` 和 `pnpm-lock.yaml`，不要通过删除锁文件规避依赖冲突。已有 pnpm 本地工作流可以继续使用；变更依赖时同步检查两份锁文件，不混用已有的 node_modules。
+
+验证隔离、持久化目录、部署健康检查和回滚限制见 [运行与验证说明](docs/运行与验证说明.md)。
 
 **Q: 端口被占用（8091 或 3000）**
 ```bash
