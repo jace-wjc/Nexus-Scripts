@@ -20,6 +20,12 @@ class PaymentStatsService:
         self.logger = logging.getLogger(__name__)
         self.engine = self._init_db_connection()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.engine.dispose()
+
     def _init_db_connection(self):
         """初始化数据库连接"""
         db_uri = (

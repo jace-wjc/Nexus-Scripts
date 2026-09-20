@@ -207,6 +207,42 @@ def test_upload_commit_acknowledgement_loss_never_claims_safe_retry(mysql_db, tm
     assert len(list(tmp_path.rglob("*.pdf"))) == 1
 
 
+def test_payment_request_disposes_its_mysql_connections(mysql_db, monkeypatch):
+    import pandas as pd
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine, event
+    from app.routers import business_core
+    from app.services import payment_stats_service
+    from app.script_hub_session import create_script_hub_session
+
+    engines, opened, closed = [], [], []
+    def engine_factory(_self):
+        engine = create_engine(mysql_db.bind.url, pool_size=5)
+        engines.append(engine)
+        event.listen(engine, 'connect', lambda *_: opened.append(True))
+        event.listen(engine, 'close', lambda *_: closed.append(True))
+        return engine
+    monkeypatch.setattr(payment_stats_service.PaymentStatsService, '_init_db_connection', engine_factory)
+    def query(_sql, connection):
+        assert connection.exec_driver_sql('SELECT 1').scalar() == 1
+        return pd.DataFrame([{'enterprise_name': 'MYSQLGATE synthetic', 'id': 1}])
+    monkeypatch.setattr(payment_stats_service.pd, 'read_sql', query)
+    app = FastAPI()
+    app.include_router(business_core.business_core_router)
+    token = create_script_hub_session({'id': 'mysqlgate', 'permissions': {'payment-stats': True}})['token']
+    try:
+        with TestClient(app) as client:
+            for _ in range(3):
+                response = client.post('/stats/payment/enterprises', headers={'Authorization': 'Bearer ' + token}, json={'environment': 'local'})
+                assert response.status_code == 200
+                assert response.json()['success'] is True
+        assert len(opened) == len(closed) == 3
+    finally:
+        for engine in engines:
+            engine.dispose()
+
+
 def test_schema_lock_timeout_across_processes_and_reacquire(mysql_db):
     import selectors
     import subprocess

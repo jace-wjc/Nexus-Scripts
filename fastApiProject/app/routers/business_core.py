@@ -168,14 +168,14 @@ async def calculate_commission(
 
 
 @business_core_router.post("/stats/payment/enterprises", response_model=PaymentStatsResponse, tags=["支付统计"])
-async def get_payment_enterprises(
+def get_payment_enterprises(
     request: PaymentStatsRequest,
     _session: Dict[str, Any] = Depends(require_script_hub_permission("payment-stats")),
 ):
     request_id = str(uuid.uuid4())
     try:
-        service = PaymentStatsService(environment=request.environment)
-        enterprises = service.get_normal_enterprises()
+        with PaymentStatsService(environment=request.environment) as service:
+            enterprises = service.get_normal_enterprises()
         return {
             "success": True,
             "message": "获取成功",
@@ -192,14 +192,14 @@ async def get_payment_enterprises(
 
 
 @business_core_router.post("/stats/payment/calculate", response_model=PaymentStatsResponse, tags=["支付统计"])
-async def calculate_payment_stats(
+def calculate_payment_stats(
     request: PaymentStatsRequest,
     _session: Dict[str, Any] = Depends(require_script_hub_permission("payment-stats")),
 ):
     request_id = str(uuid.uuid4())
     try:
-        service = PaymentStatsService(environment=request.environment)
-        stats = service.calculate_stats(enterprise_ids=request.enterprise_ids)
+        with PaymentStatsService(environment=request.environment) as service:
+            stats = service.calculate_stats(enterprise_ids=request.enterprise_ids)
         return {
             "success": True,
             "message": "计算成功",
