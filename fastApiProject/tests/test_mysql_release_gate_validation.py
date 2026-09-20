@@ -127,6 +127,86 @@ def mysql_db():
         db.close()
 
 
+def test_upload_partial_commit_is_visible_to_fresh_session_and_retry_is_scoped(mysql_db, tmp_path, monkeypatch):
+    from app.services import recruitment_service_impl as implementation
+    from app.recruitment_models import RecruitmentCandidate, RecruitmentResumeFile
+
+    monkeypatch.setattr(implementation, "RECRUITMENT_UPLOAD_ROOT", tmp_path)
+    service = implementation.RecruitmentService(mysql_db)
+    serialize = service._serialize_candidate_summary
+    visible_before_last = []
+
+    def serialize_with_failure(candidate):
+        candidate.candidate_code = f"{MARKER_PREFIX}-UPLOAD-{candidate.id}"
+        mysql_db.flush()
+        if candidate.source_detail == "synthetic-failed.pdf":
+            raise RuntimeError("synthetic precommit failure")
+        if candidate.source_detail == "synthetic-last.pdf":
+            with _new_session() as observer:
+                visible_before_last.extend(row.source_detail for row in observer.query(RecruitmentCandidate)
+                                           .filter(RecruitmentCandidate.candidate_code.like(f"{MARKER_PREFIX}-UPLOAD-%")))
+        return serialize(candidate)
+
+    monkeypatch.setattr(service, "_serialize_candidate_summary", serialize_with_failure)
+    files = [{"file_name": f"synthetic-{name}.pdf", "content": b"synthetic"} for name in ("first", "failed", "last")]
+    rows = service.upload_resume_files(files, None, "mysqlgate", match_mode="none")
+    assert [row["upload_status"] for row in rows] == ["uploaded", "failed", "uploaded"]
+    assert visible_before_last == ["synthetic-first.pdf"]
+
+    def serialize_retry(candidate):
+        candidate.candidate_code = f"{MARKER_PREFIX}-UPLOAD-{candidate.id}"
+        mysql_db.flush()
+        return serialize(candidate)
+
+    monkeypatch.setattr(service, "_serialize_candidate_summary", serialize_retry)
+    retry = service.upload_resume_files([files[1]], None, "mysqlgate", match_mode="none")
+    assert retry[0]["upload_status"] == "uploaded"
+    with _new_session() as observer:
+        candidates = observer.query(RecruitmentCandidate).filter(RecruitmentCandidate.candidate_code.like(f"{MARKER_PREFIX}-UPLOAD-%")).all()
+        assert len(candidates) == 3
+        for candidate in candidates:
+            resume = observer.get(RecruitmentResumeFile, candidate.latest_resume_file_id)
+            assert resume.candidate_id == candidate.id
+            assert resume.org_code == candidate.org_code
+            assert (tmp_path / resume.storage_path).read_bytes() == b"synthetic"
+    assert len(list(tmp_path.rglob("*.pdf"))) == 3
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_upload_commit_acknowledgement_loss_never_claims_safe_retry(mysql_db, tmp_path, monkeypatch, committed):
+    from app.services import recruitment_service_impl as implementation
+    from app.recruitment_models import RecruitmentCandidate, RecruitmentResumeFile
+
+    monkeypatch.setattr(implementation, "RECRUITMENT_UPLOAD_ROOT", tmp_path)
+    service = implementation.RecruitmentService(mysql_db)
+    serialize = service._serialize_candidate_summary
+    commit = mysql_db.commit
+
+    def mark(candidate):
+        candidate.candidate_code = f"{MARKER_PREFIX}-UNCERTAIN-{candidate.id}"
+        mysql_db.flush()
+        return serialize(candidate)
+
+    def lost_acknowledgement():
+        if committed:
+            commit()
+        raise RuntimeError("synthetic lost commit acknowledgement")
+
+    monkeypatch.setattr(service, "_serialize_candidate_summary", mark)
+    with monkeypatch.context() as patch:
+        patch.setattr(mysql_db, "commit", lost_acknowledgement)
+        rows = service.upload_resume_files([{"file_name": "synthetic-uncertain.pdf", "content": b"synthetic"}], None, "mysqlgate", match_mode="none")
+    assert rows[0]["upload_status"] == "unknown"
+    assert rows[0]["retryable"] is False
+    with _new_session() as observer:
+        candidates = observer.query(RecruitmentCandidate).filter(RecruitmentCandidate.candidate_code.like(f"{MARKER_PREFIX}-UNCERTAIN-%")).all()
+        assert len(candidates) == int(committed)
+        for candidate in candidates:
+            resume = observer.get(RecruitmentResumeFile, candidate.latest_resume_file_id)
+            assert (tmp_path / resume.storage_path).is_file()
+    assert len(list(tmp_path.rglob("*.pdf"))) == 1
+
+
 def test_schema_lock_timeout_across_processes_and_reacquire(mysql_db):
     import selectors
     import subprocess

@@ -289,7 +289,7 @@ def _should_deliver_task_event(
 
 
 def _filter_uploaded_resume_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [row for row in rows if not row.get("skipped_duplicate")]
+    return [row for row in rows if not row.get("skipped_duplicate") and not row.get("upload_error")]
 
 
 def _load_task_event_context(session: Dict[str, Any]) -> PermissionContext:
@@ -1167,13 +1167,25 @@ async def upload_resumes(
     staging_root.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix="resume-batch-", dir=str(staging_root)))
     uploaded_files: List[Dict[str, Any]] = []
+    file_results = []
     try:
         try:
             service.db.rollback()
         except Exception:
             logger.debug("Failed to release recruitment DB session before staging upload", exc_info=True)
-        for item in files:
-            uploaded_files.append(await _stage_upload_file(item, staging_dir))
+        for file_index, item in enumerate(files):
+            try:
+                staged = await _stage_upload_file(item, staging_dir)
+                staged["file_index"] = file_index
+                uploaded_files.append(staged)
+            except (HTTPException, OSError) as exc:
+                file_results.append({
+                    "file_index": file_index, "file_name": Path(item.filename or "resume.bin").name,
+                    "status": "failed", "retryable": True,
+                    "error_code": "upload_unsupported_file" if isinstance(exc, HTTPException) else "upload_staging_failed",
+                })
+            finally:
+                await item.close()
 
         # 根据match_mode处理岗位匹配
         effective_position_id = position_id
@@ -1184,12 +1196,21 @@ async def upload_resumes(
             # AI智能匹配，先不设置岗位，后续由AI匹配
             effective_position_id = None
 
-        rows = service.upload_resume_files(
+        outcomes = await run_in_threadpool(service.upload_resume_files,
             uploaded_files, effective_position_id, _session.get("id") or "unknown",
             org_code, city, city_source=city_source,
             match_mode=match_mode,
             source=source, duplicate_strategy=duplicate_strategy
         )
+        file_results.extend({
+            "file_index": row["file_index"], "file_name": row["file_name"],
+            "status": row["upload_status"], "candidate_id": row.get("id"),
+            "error_code": row.get("upload_error"), "retryable": bool(row.get("retryable")),
+        } for row in outcomes)
+        file_results.sort(key=lambda row: row["file_index"])
+        failed_count = sum(row["status"] == "failed" for row in file_results)
+        unknown_count = sum(row["status"] == "unknown" for row in file_results)
+        rows = [row for row in outcomes if not row.get("upload_error")]
         uploaded_rows = _filter_uploaded_resume_rows(rows)
         skipped_duplicate_count = len(rows) - len(uploaded_rows)
 
@@ -1262,8 +1283,13 @@ async def upload_resumes(
             except Exception as exc:
                 row["auto_screen_error"] = str(exc)
                 auto_screen_failed_count += 1
+        auto_screen_dispatch_pending = False
         if auto_screen_tasks:
-            service.process_next_screening_task()
+            try:
+                service.process_next_screening_task()
+            except Exception as exc:
+                auto_screen_dispatch_pending = True
+                logger.warning("Uploaded resumes retained; screening dispatch pending: %s", type(exc).__name__)
 
         # 记录审计日志
         try:
@@ -1276,6 +1302,8 @@ async def upload_resumes(
                 target_code=f"batch-{len(uploaded_rows)}",
                 details={
                     "uploaded_count": len(uploaded_rows),
+                    "failed_count": failed_count,
+                    "unknown_count": unknown_count,
                     "skipped_duplicate_count": skipped_duplicate_count,
                     "returned_count": len(rows),
                     "match_mode": match_mode,
@@ -1292,9 +1320,12 @@ async def upload_resumes(
             logger.warning(f"Failed to write audit log for upload: {log_exc}")
 
         return {
-            "success": True,
+            "success": not (failed_count or unknown_count),
             "data": {
                 "items": rows,
+                "file_results": file_results,
+                "failed_count": failed_count,
+                "unknown_count": unknown_count,
                 "uploaded_count": len(uploaded_rows),
                 "skipped_duplicate_count": skipped_duplicate_count,
                 "returned_count": len(rows),
@@ -1303,6 +1334,7 @@ async def upload_resumes(
                 "auto_screen_failed_count": auto_screen_failed_count,
                 "auto_screen_task_ids": [task.get("task_id") for task in auto_screen_tasks if task.get("task_id")],
                 "auto_screen_tasks": auto_screen_tasks,
+                "auto_screen_dispatch_pending": auto_screen_dispatch_pending,
                 "batch_id": batch_id,
                 "ai_match_result": ai_match_result,
             },

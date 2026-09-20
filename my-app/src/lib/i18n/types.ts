@@ -2617,6 +2617,20 @@ export interface Translations {
     selectedFiles: string;
     uploading: string;
     uploadProgress: string;
+    uploadRecovery: {
+        resultsTitle: string;
+        summary: string;
+        retryFailed: string;
+        unknownHint: string;
+        uploaded: string;
+        skipped_duplicate: string;
+        failed: string;
+        unknown: string;
+        notStarted: string;
+        processing: string;
+        dispatchPending: string;
+        contextChanged: string;
+    };
     // Delete Dialogs
     confirmDeletePosition: string;
     confirmDeletePositionDesc: string;

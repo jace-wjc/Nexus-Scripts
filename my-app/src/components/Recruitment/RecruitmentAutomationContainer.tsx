@@ -1,5 +1,6 @@
 "use client";
 
+import { runResumeUploadBatches } from "./uploadResumeBatches";
 import React, {useCallback, useDeferredValue, useEffect, useMemo, useRef, useState} from "react";
 import nextDynamic from "next/dynamic";
 import {
@@ -88,6 +89,7 @@ import {
     type RecruitmentVisibleScreeningCancelResponse,
     type ResumeFile,
     type ResumeUploadResponse,
+    type ResumeUploadFileResult,
     type RecruitmentTaskStartResponse,
     triggerAIPositionMatch,
 } from "@/lib/recruitment-api";
@@ -1962,6 +1964,7 @@ export default function RecruitmentAutomationContainer({
     const {language, t} = useI18n();
     const isZh = language === "zh-CN";
     const candidateComparisonText = t.recruitment.candidateComparison;
+    const uploadRecoveryText = t.recruitment.uploadRecovery;
     // Temporary UI toggle: keep the top-right assistant button in code for quick restore later.
     const hideTopRightAssistantEntry = true;
     const sessionUser = useMemo(() => getStoredScriptHubSession()?.user ?? null, []);
@@ -2882,7 +2885,7 @@ export default function RecruitmentAutomationContainer({
 
     const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
     const [uploadingResume, setUploadingResume] = useState(false);
-    const [resumeUploadFileList, setResumeUploadFileList] = useState<FileList | null>(null);
+    const [resumeUploadFileList, setResumeUploadFileList] = useState<File[] | null>(null);
     const [resumeUploadMode, setResumeUploadMode] = useState<"position" | "none" | "smart">("smart");
     const [resumeUploadPositionId, setResumeUploadPositionId] = useState("all");
     const [resumeUploadOrgCode, setResumeUploadOrgCode] = useState(defaultOrgScope);
@@ -2897,6 +2900,11 @@ export default function RecruitmentAutomationContainer({
     const [uploadCompletedCount, setUploadCompletedCount] = useState(0);
     const [resumeUploadError, setResumeUploadError] = useState<string | null>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
+    const resumeUploadInFlightRef = useRef(false);
+    const [resumeUploadResults, setResumeUploadResults] = useState<ResumeUploadFileResult[]>([]);
+    const uploadContextRef = useRef("");
+    uploadContextRef.current = `${selectedOrgScope}\u0000${getStoredScriptHubSession()?.token || ""}`;
+    useEffect(() => () => abortControllerRef.current?.abort(), []);
 
     const [publishDialogOpen, setPublishDialogOpen] = useState(false);
     const [publishPlatform, setPublishPlatform] = useState("boss");
@@ -10537,6 +10545,7 @@ export default function RecruitmentAutomationContainer({
     const CONCURRENCY = 4;
 
     async function uploadResumes() {
+        if (resumeUploadInFlightRef.current) return;
         if (!resumeUploadFileList?.length) {
             setResumeUploadError(recruitmentToast.noResumeSelected);
             return;
@@ -10553,6 +10562,9 @@ export default function RecruitmentAutomationContainer({
         }
 
         const files = resumeUploadFileList;
+        const retainedResults = resumeUploadResults.filter((item) => item.status !== "failed");
+        const uploadContext = uploadContextRef.current;
+        const uploadAuthHeaders = getScriptHubAuthHeaderRecord();
         const total = files.length;
 
         // 根据模式构建请求参数
@@ -10577,21 +10589,18 @@ export default function RecruitmentAutomationContainer({
             duplicate_strategy: resumeUploadDuplicateStrategy,
         });
 
-        const batches: File[][] = [];
-        for (let i = 0; i < total; i += BATCH_SIZE) {
-            batches.push(Array.from({ length: Math.min(BATCH_SIZE, total - i) },
-                (_, j) => files[i + j]));
-        }
-
+        resumeUploadInFlightRef.current = true;
         setUploadingResume(true);
-        setUploadProgress(1);
+        setResumeUploadError(null);
+        setUploadProgress(0);
         setUploadCompletedCount(0);
         abortControllerRef.current = new AbortController();
 
-        let uploadedCount = 0, skippedDuplicateCount = 0, autoScreenQueued = 0, autoScreenSkipped = 0, autoScreenFailed = 0;
-        let aiMatchedCount = 0, aiMatchTotal = 0;
+        let uploadedCount = retainedResults.filter((item) => item.status === "uploaded").length;
+        let skippedDuplicateCount = retainedResults.filter((item) => item.status === "skipped_duplicate").length;
+        let autoScreenQueued = 0, autoScreenSkipped = 0, autoScreenFailed = 0;
+        let aiMatchTotal = 0;
         const allItems: ResumeUploadResponse["items"] = [];
-        let batchIndex = 0;
         let completedFiles = 0;
         const activeBatchProgressFiles = new Map<number, number>();
 
@@ -10599,14 +10608,14 @@ export default function RecruitmentAutomationContainer({
         function uploadBatchWithProgress(formData: FormData, signal: AbortSignal, currentBatchIndex: number, currentBatchSize: number): Promise<ResumeUploadResponse> {
             return new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
-                const authHeaders = getScriptHubAuthHeaderRecord();
+                const authHeaders = uploadAuthHeaders;
 
                 // 关联 AbortController
                 const onAbort = () => xhr.abort();
                 signal.addEventListener("abort", onAbort, { once: true });
 
                 xhr.upload.onprogress = (e) => {
-                    if (e.lengthComputable && batches.length > 0) {
+                    if (e.lengthComputable && e.total > 0 && total > 0) {
                         // 计算全局进度：已完成文件 + 所有并发批次的字节级进度。
                         const batchProgress = e.loaded / e.total; // 0~1
                         activeBatchProgressFiles.set(currentBatchIndex, batchProgress * currentBatchSize);
@@ -10614,7 +10623,6 @@ export default function RecruitmentAutomationContainer({
                         const globalCompleted = completedFiles + activeProgressFiles;
                         const pct = Math.max(1, Math.min(99, Math.round(globalCompleted / total * 100)));
                         setUploadProgress(pct);
-                        setUploadCompletedCount(Math.floor(globalCompleted));
                     }
                 };
 
@@ -10623,7 +10631,7 @@ export default function RecruitmentAutomationContainer({
                     if (xhr.status >= 200 && xhr.status < 300) {
                         try {
                             const json = JSON.parse(xhr.responseText);
-                            if (json.success === false) {
+                            if (json.success === false && !Array.isArray(json.data?.file_results)) {
                                 reject(new Error(json.message || json.error || "Request failed"));
                             } else {
                                 resolve(json.data ?? json);
@@ -10657,43 +10665,55 @@ export default function RecruitmentAutomationContainer({
                 for (const [key, value] of Object.entries(authHeaders)) {
                     xhr.setRequestHeader(key, value);
                 }
+                if (signal.aborted || uploadContextRef.current !== uploadContext) {
+                    abortControllerRef.current?.abort();
+                    reject(new DOMException("Aborted", "AbortError"));
+                    signal.removeEventListener("abort", onAbort);
+                    return;
+                }
                 xhr.send(formData);
             });
         }
 
-        async function runOneBatch() {
-            while (batchIndex < batches.length) {
-                if (abortControllerRef.current?.signal.aborted) return;
-                const idx = batchIndex++;
-                const batch = batches[idx];
-                const formData = new FormData();
-                batch.forEach((f) => formData.append("files", f));
-                let uploaded: ResumeUploadResponse;
-                try {
-                    uploaded = await uploadBatchWithProgress(formData, abortControllerRef.current!.signal, idx, batch.length);
-                } finally {
-                    activeBatchProgressFiles.delete(idx);
-                }
+        try {
+            const uploadController = abortControllerRef.current;
+            const outcome = await runResumeUploadBatches({
+                files, signal: uploadController.signal, batchSize: BATCH_SIZE, concurrency: CONCURRENCY,
+                sendBatch: async (batch, index) => {
+                    const formData = new FormData();
+                    batch.forEach((file) => formData.append("files", file));
+                    try {
+                        return await uploadBatchWithProgress(formData, uploadController.signal, index, batch.length);
+                    } finally {
+                        activeBatchProgressFiles.delete(index);
+                    }
+                },
+                onSettled: (count) => {
+                    completedFiles = count;
+                    setUploadCompletedCount(count);
+                    setUploadProgress(Math.min(99, Math.round(count / total * 100)));
+                },
+            });
+            if (!mountedRef.current) return;
+            const combinedResults = [...retainedResults, ...outcome.results];
+            setResumeUploadResults(combinedResults);
+            for (const uploaded of outcome.responses) {
                 uploadedCount += uploaded.uploaded_count;
-                skippedDuplicateCount += uploaded.skipped_duplicate_count
-                    ?? uploaded.items.filter((item) => item.skipped_duplicate).length;
+                skippedDuplicateCount += uploaded.skipped_duplicate_count ?? uploaded.items.filter((item) => item.skipped_duplicate).length;
                 autoScreenQueued += uploaded.auto_screen_queued_count;
                 autoScreenSkipped += uploaded.auto_screen_skipped_existing_live_task_count;
                 autoScreenFailed += uploaded.auto_screen_failed_count;
-                if (uploaded.ai_match_result) {
-                    aiMatchedCount += uploaded.ai_match_result.matched_count || 0;
-                    aiMatchTotal += uploaded.ai_match_result.total_candidates || 0;
-                }
+                aiMatchTotal += uploaded.ai_match_result?.total_candidates || 0;
                 allItems.push(...uploaded.items);
-                completedFiles += batch.length;
-                setUploadCompletedCount(completedFiles);
-                setUploadProgress(Math.max(1, Math.round(completedFiles / total * 100)));
             }
-        }
-
-        try {
-            await Promise.all(Array.from({ length: CONCURRENCY }, runOneBatch));
-
+            const failedResults = outcome.results.filter((item) => item.status === "failed");
+            const unknownResults = combinedResults.filter((item) => item.status === "unknown");
+            const retryIndices = new Set(failedResults.filter((item) => item.retryable).map((item) => item.file_index));
+            if (uploadContextRef.current !== uploadContext) {
+                setResumeUploadFileList(null);
+                setResumeUploadError(uploadRecoveryText.contextChanged);
+                return;
+            }
             allItems.forEach((item) => {
                 if (item.auto_screen_task_id && item.auto_screen_task_status && isLiveTaskStatus(item.auto_screen_task_status)) {
                     attachScreeningTaskMonitor(item.id, item.auto_screen_task_id, {
@@ -10702,6 +10722,20 @@ export default function RecruitmentAutomationContainer({
                     });
                 }
             });
+            if (failedResults.length || unknownResults.length) {
+                const summary = uploadRecoveryText.summary
+                    .replace("{uploaded}", String(uploadedCount)).replace("{skipped}", String(skippedDuplicateCount))
+                    .replace("{failed}", String(failedResults.length)).replace("{unknown}", String(unknownResults.length));
+                setResumeUploadFileList(files.filter((_file, index) => retryIndices.has(index)));
+                setResumeUploadError(summary + (unknownResults.length ? ` ${uploadRecoveryText.unknownHint}` : ""));
+                toast.warning(summary);
+                void refreshCoreData({silent: true});
+                return;
+            }
+            if (outcome.responses.some((response) => response.auto_screen_dispatch_pending)) {
+                toast.warning(uploadRecoveryText.dispatchPending);
+            }
+            setUploadProgress(100);
             const aiMatchMsg = aiMatchTotal > 0
                 ? (isZh ? `，AI 岗位匹配进行中（${aiMatchTotal} 份），结果将实时更新` : `, AI position matching in progress (${aiMatchTotal}), results will update in real-time`)
                 : "";
@@ -10752,7 +10786,7 @@ export default function RecruitmentAutomationContainer({
                     );
                 if (optimisticItems.length > 0) {
                     setAllCandidates((prev) => deduplicateCandidates([...optimisticItems, ...prev]));
-                    setCandidateTotal((prev) => prev + optimisticItems.length);
+                    setCandidateTotal((prev) => prev + optimisticItems.filter((item) => !item.skipped_duplicate && !item.overwritten).length);
                 }
             }
             const shouldFocusMatchingTalentPool = resumeUploadMode === "smart" && (
@@ -10785,6 +10819,7 @@ export default function RecruitmentAutomationContainer({
             setUploadProgress(0);
             setUploadCompletedCount(0);
             abortControllerRef.current = null;
+            resumeUploadInFlightRef.current = false;
         }
     }
 
@@ -10853,7 +10888,8 @@ export default function RecruitmentAutomationContainer({
             return;
         }
         setResumeUploadError(null);
-        setResumeUploadFileList(files);
+        setResumeUploadFileList(files ? Array.from(files) : null);
+        setResumeUploadResults([]);
     }, [isZh]);
 
     const handleResumeFileChange = React.useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
@@ -10861,6 +10897,7 @@ export default function RecruitmentAutomationContainer({
     }, [selectResumeUploadFiles]);
 
     const resetResumeUploadDraft = React.useCallback(() => {
+        setResumeUploadResults([]);
         setResumeUploadFileList(null);
         setResumeUploadMode("smart");
         setResumeUploadPositionId("");
@@ -11271,6 +11308,19 @@ export default function RecruitmentAutomationContainer({
                             </div>
                         ) : null}
 
+                        {resumeUploadResults.length > 0 ? (
+                            <ul className="space-y-2 text-xs" aria-label={uploadRecoveryText.resultsTitle}>
+                                {resumeUploadResults.map((result, index) => (
+                                    <li key={`${result.file_name}-${index}`} className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+                                        <span className="min-w-0 truncate" title={result.file_name}>{result.file_name}</span>
+                                        <span className="shrink-0 text-muted-foreground">
+                                            {result.error_code === "upload_not_started" ? uploadRecoveryText.notStarted : uploadRecoveryText[result.status]}
+                                        </span>
+                                    </li>
+                                ))}
+                            </ul>
+                        ) : null}
+
                         {resumeUploadError ? (
                             <div className="rounded-[6px] bg-[rgba(245,63,63,0.08)] px-3 py-2.5 text-[12px] leading-5 text-[#F53F3F] dark:bg-[rgba(245,63,63,0.08)] dark:text-[#F53F3F]" role="alert">
                                 {resumeUploadError}
@@ -11279,12 +11329,12 @@ export default function RecruitmentAutomationContainer({
                     </div>
                 </ScrollArea>
 
-                <DialogFooter className="h-16 shrink-0 flex-row items-center justify-between gap-3 border-t border-[#F2F3F5] px-6 py-0 sm:justify-between">
-                    <div className="min-w-0 flex-1">
+                <DialogFooter className="shrink-0 flex-col items-stretch justify-between gap-3 border-t border-[#F2F3F5] px-6 py-3 sm:min-h-16 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 sm:flex-1">
                         {uploadingResume ? (
                             <div className="space-y-1.5">
                                 <div className="flex items-center justify-between gap-3 text-[11px] text-[#86888F] dark:text-[#86888F]">
-                                    <span className="truncate">{recruitmentUiText.uploadedProgress(uploadCompletedCount, uploadFiles.length)}</span>
+                                    <span className="truncate">{uploadRecoveryText.processing.replace("{completed}", String(uploadCompletedCount)).replace("{total}", String(uploadFiles.length))}</span>
                                     <span className="shrink-0 tabular-nums text-[#1E3BFA] dark:text-[#1E3BFA]">{uploadProgress}%</span>
                                 </div>
                                 <div className="h-1 overflow-hidden rounded-[4px] bg-[#F2F3F5] dark:bg-[#F2F3F5]">
@@ -11300,7 +11350,7 @@ export default function RecruitmentAutomationContainer({
                             </span>
                         )}
                     </div>
-                    <div className="flex shrink-0 items-center gap-3">
+                    <div className="flex shrink-0 items-center justify-end gap-3">
                         <Button
                             variant="outline"
                             className="h-[34px] rounded-[6px] border-[#E6E7EB] bg-white px-[18px] text-[13px] font-normal text-[#33353D] shadow-none hover:border-[#D6D8DD] hover:bg-[#F8F8F9] hover:text-[#33353D] dark:border-[#E6E7EB] dark:bg-white dark:text-[#33353D] dark:shadow-none dark:hover:border-[#D6D8DD] dark:hover:bg-[#F8F8F9] dark:hover:text-[#33353D]"
@@ -11318,20 +11368,20 @@ export default function RecruitmentAutomationContainer({
                         <Button
                             className="h-[34px] rounded-[6px] bg-[#1E3BFA] px-[18px] text-[13px] font-normal text-white shadow-none hover:bg-[#0F23D9] focus-visible:border-[#1E3BFA] focus-visible:ring-[#1E3BFA]/20 dark:bg-[#1E3BFA] dark:text-white dark:shadow-none dark:hover:bg-[#0F23D9]"
                             onClick={() => void uploadResumes()}
-                            disabled={uploadingResume}
+                            disabled={uploadingResume || !uploadFiles.length}
                         >
                             {uploadingResume ? (
                                 <>
                                     <Loader2 className="h-3.5 w-3.5 animate-spin"/>
                                     {recruitmentUiText.uploading}
                                 </>
-                            ) : recruitmentUiText.startUpload}
+                            ) : resumeUploadResults.length ? uploadRecoveryText.retryFailed : recruitmentUiText.startUpload}
                         </Button>
                     </div>
                 </DialogFooter>
             </DialogContent>
         );
-    }, [recruitmentUiText, positionsLoading, positions, resumeUploadPositionId, showOrganizationFields, organizationSelectOptions, resumeUploadOrgCode, resumeUploadCitySource, resumeUploadCity, resumeUploadFileList, resumeUploadError, uploadingResume, uploadCompletedCount, uploadProgress, resumeUploadMode, resumeUploadSource, resumeUploadDuplicateStrategy, isZh, showAdvancedOptions, isDraggingFile, resetResumeUploadDraft, selectResumeUploadFiles]);
+    }, [recruitmentUiText, uploadRecoveryText, resumeUploadResults, positionsLoading, positions, resumeUploadPositionId, showOrganizationFields, organizationSelectOptions, resumeUploadOrgCode, resumeUploadCitySource, resumeUploadCity, resumeUploadFileList, resumeUploadError, uploadingResume, uploadCompletedCount, uploadProgress, resumeUploadMode, resumeUploadSource, resumeUploadDuplicateStrategy, isZh, showAdvancedOptions, isDraggingFile, resetResumeUploadDraft, selectResumeUploadFiles]);
 
     function openResumeUploadDialog(positionId?: number | null) {
         const targetPositionId = typeof positionId === "number" && Number.isFinite(positionId) ? positionId : null;

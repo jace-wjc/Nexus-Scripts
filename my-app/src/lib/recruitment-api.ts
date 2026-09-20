@@ -863,8 +863,21 @@ export interface ResumeUploadItem extends CandidateSummary {
   auto_screen_error?: string | null;
 }
 
+export interface ResumeUploadFileResult {
+  file_index: number;
+  file_name: string;
+  status: "uploaded" | "skipped_duplicate" | "failed" | "unknown";
+  candidate_id?: number | null;
+  error_code?: string | null;
+  retryable?: boolean;
+}
+
 export interface ResumeUploadResponse {
   items: ResumeUploadItem[];
+  file_results?: ResumeUploadFileResult[];
+  failed_count?: number;
+  unknown_count?: number;
+  auto_screen_dispatch_pending?: boolean;
   uploaded_count: number;
   skipped_duplicate_count?: number;
   returned_count?: number;

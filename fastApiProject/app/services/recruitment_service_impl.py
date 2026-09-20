@@ -17243,141 +17243,156 @@ class RecruitmentService:
         target_dir = RECRUITMENT_UPLOAD_ROOT / uuid.uuid4().hex[:8]
         target_dir.mkdir(parents=True, exist_ok=True)
         results: List[Dict[str, Any]] = []
-        candidate_resume_pairs: List[tuple] = []
         normalized_match_mode = str(match_mode or "position").strip().lower() or "position"
 
-        for item in uploaded_files:
+        for file_index, item in enumerate(uploaded_files):
             file_name = str(item.get("file_name") or "resume.bin")
-            ext = Path(file_name).suffix.lower()
-            stored_name = f"{uuid.uuid4().hex}{ext}"
+            stored_name = f"{uuid.uuid4().hex}{Path(file_name).suffix.lower()}"
             storage_path = target_dir / stored_name
-            staged_path_text = str(item.get("staged_path") or "").strip()
-            file_size = int(item.get("file_size") or 0)
-            if staged_path_text:
-                staged_path = Path(staged_path_text)
-                if not staged_path.exists():
-                    raise ValueError(f"上传文件暂存失败：{file_name}")
-                storage_path.parent.mkdir(parents=True, exist_ok=True)
-                if staged_path.resolve() != storage_path.resolve():
-                    shutil.move(str(staged_path), str(storage_path))
+            outcome = {"file_index": item.get("file_index", file_index), "file_name": file_name}
+            commit_started = False
+            try:
+                ext = Path(file_name).suffix.lower()
+                staged_path_text = str(item.get("staged_path") or "").strip()
+                file_size = int(item.get("file_size") or 0)
+                if staged_path_text:
+                    staged_path = Path(staged_path_text)
+                    if not staged_path.exists():
+                        raise ValueError(f"上传文件暂存失败：{file_name}")
+                    storage_path.parent.mkdir(parents=True, exist_ok=True)
+                    if staged_path.resolve() != storage_path.resolve():
+                        shutil.move(str(staged_path), str(storage_path))
+                    else:
+                        storage_path = staged_path
+                    if file_size <= 0:
+                        file_size = int(storage_path.stat().st_size)
                 else:
-                    storage_path = staged_path
-                if file_size <= 0:
-                    file_size = int(storage_path.stat().st_size)
-            else:
-                content = item.get("content") or b""
-                storage_path.write_bytes(content)
-                file_size = len(content)
-            candidate_org_code = normalize_org_code(getattr(position, "org_code", None) if position else fallback_org_code)
-            resolved_city: Optional[str] = None
-            if city_source == "auto":
-                from .recruitment_utils import extract_city_from_filename
-                resolved_city = extract_city_from_filename(file_name) or None
-            else:
-                resolved_city = city
-            # 根据上传模式确定初始状态
-            initial_status = "pending_screening"
-            if normalized_match_mode == "smart" and position_id is None:
-                initial_status = "matching"
-            elif normalized_match_mode == "none" and position_id is None:
-                initial_status = "new_imported"
-            # 映射source参数到实际的source值
-            source_mapping = {
-                "manual": "manual_upload",
-                "boss": "boss_zhipin",
-                "liepin": "liepin",
-                "headhunter": "headhunter",
-                "other": "other"
-            }
-            actual_source = source_mapping.get(source, "manual_upload")
-            legacy_candidate_name = safe_file_stem(file_name)
-            resolved_candidate_name = resolve_high_confidence_candidate_name(file_name=file_name)
-            candidate_name = str((resolved_candidate_name or {}).get("value") or legacy_candidate_name)
-            candidate_name_source = str((resolved_candidate_name or {}).get("source") or "filename_untrusted")
-            candidate_name_confidence = (
-                float((resolved_candidate_name or {}).get("confidence") or 0.0)
-                if resolved_candidate_name
-                else None
-            )
-
-            # 重复检测沿用历史 filename stem，并补充 source_detail；不使用新提取出的姓名，
-            # 避免同名候选人在批量上传时被错误合并。
-            if duplicate_strategy in ("skip", "overwrite"):
-                existing = self._find_duplicate_candidate(
-                    legacy_candidate_name,
-                    file_name,
-                    candidate_org_code,
-                    position.id if position else None,
+                    content = item.get("content") or b""
+                    storage_path.write_bytes(content)
+                    file_size = len(content)
+                candidate_org_code = normalize_org_code(getattr(position, "org_code", None) if position else fallback_org_code)
+                resolved_city: Optional[str] = None
+                if city_source == "auto":
+                    from .recruitment_utils import extract_city_from_filename
+                    resolved_city = extract_city_from_filename(file_name) or None
+                else:
+                    resolved_city = city
+                # 根据上传模式确定初始状态
+                initial_status = "pending_screening"
+                if normalized_match_mode == "smart" and position_id is None:
+                    initial_status = "matching"
+                elif normalized_match_mode == "none" and position_id is None:
+                    initial_status = "new_imported"
+                # 映射source参数到实际的source值
+                source_mapping = {
+                    "manual": "manual_upload",
+                    "boss": "boss_zhipin",
+                    "liepin": "liepin",
+                    "headhunter": "headhunter",
+                    "other": "other"
+                }
+                actual_source = source_mapping.get(source, "manual_upload")
+                legacy_candidate_name = safe_file_stem(file_name)
+                resolved_candidate_name = resolve_high_confidence_candidate_name(file_name=file_name)
+                candidate_name = str((resolved_candidate_name or {}).get("value") or legacy_candidate_name)
+                candidate_name_source = str((resolved_candidate_name or {}).get("source") or "filename_untrusted")
+                candidate_name_confidence = (
+                    float((resolved_candidate_name or {}).get("confidence") or 0.0)
+                    if resolved_candidate_name
+                    else None
                 )
-                if existing:
-                    if duplicate_strategy == "skip":
-                        # 跳过重复，不创建新记录
-                        # 清理已暂存的文件
-                        try:
-                            storage_path.unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                        results.append({
-                            "id": existing.id,
-                            "candidate_code": existing.candidate_code,
-                            "name": existing.name,
-                            "status": existing.status,
-                            "skipped_duplicate": True,
-                        })
-                        continue
-                    elif duplicate_strategy == "overwrite":
-                        # 覆盖：更新已有候选人的基础信息，保留状态和评分
-                        existing.source = actual_source
-                        existing.source_detail = file_name
-                        existing.city = resolved_city or existing.city
-                        existing.updated_by = actor_id
-                        # 创建新的简历文件记录
-                        upload_mime_type = str(item.get("content_type") or "").strip()
-                        if not upload_mime_type or upload_mime_type in {"application/octet-stream", "binary/octet-stream"}:
-                            upload_mime_type = mimetypes.guess_type(file_name)[0] or None
-                        relative_storage_path = str(storage_path.relative_to(RECRUITMENT_UPLOAD_ROOT))
-                        resume_file = RecruitmentResumeFile(org_code=candidate_org_code, candidate_id=existing.id, original_name=file_name, stored_name=stored_name, file_ext=ext, mime_type=upload_mime_type or None, file_size=file_size, storage_path=relative_storage_path, parse_status="pending", uploaded_by=actor_id)
-                        self.db.add(resume_file)
-                        self.db.flush()
-                        existing.latest_resume_file_id = resume_file.id
-                        self.db.commit()
-                        self.db.refresh(existing)
-                        payload = self._serialize_candidate_summary(existing)
-                        payload["auto_screen_enabled"] = bool(position.auto_screen_on_upload) if position else False
-                        payload["overwritten"] = True
-                        results.append(payload)
-                        continue
 
-            candidate = RecruitmentCandidate(candidate_code=f"TMP-{uuid.uuid4().hex[:8]}", org_code=candidate_org_code, position_id=position.id if position else None, name=candidate_name, name_source=candidate_name_source, name_confidence=candidate_name_confidence, source=actual_source, source_detail=file_name, status=initial_status, city=resolved_city, tags_json=json_dumps_safe([]), created_by=actor_id, updated_by=actor_id, deleted=False)
-            self.db.add(candidate)
-            upload_mime_type = str(item.get("content_type") or "").strip()
-            if not upload_mime_type or upload_mime_type in {"application/octet-stream", "binary/octet-stream"}:
-                upload_mime_type = mimetypes.guess_type(file_name)[0] or None
-            # Store relative path (relative to RECRUITMENT_UPLOAD_ROOT) for cross-environment compatibility
-            relative_storage_path = str(storage_path.relative_to(RECRUITMENT_UPLOAD_ROOT))
-            resume_file = RecruitmentResumeFile(org_code=candidate_org_code, candidate_id=None, original_name=file_name, stored_name=stored_name, file_ext=ext, mime_type=upload_mime_type or None, file_size=file_size, storage_path=relative_storage_path, parse_status="pending", uploaded_by=actor_id)
-            # 注意：不在这里 add resume_file，等 flush 拿到 candidate IDs 后再 add
-            candidate_resume_pairs.append((candidate, resume_file, position, file_name))
+                # 重复检测沿用历史 filename stem，并补充 source_detail；不使用新提取出的姓名，
+                # 避免同名候选人在批量上传时被错误合并。
+                if duplicate_strategy in ("skip", "overwrite"):
+                    existing = self._find_duplicate_candidate(
+                        legacy_candidate_name,
+                        file_name,
+                        candidate_org_code,
+                        position.id if position else None,
+                    )
+                    if existing:
+                        if duplicate_strategy == "skip":
+                            # 跳过重复，不创建新记录
+                            # 清理已暂存的文件
+                            try:
+                                storage_path.unlink(missing_ok=True)
+                            except OSError as exc:
+                                logger.warning("Duplicate upload cleanup failed: %s", type(exc).__name__)
+                            results.append({
+                                "id": existing.id,
+                                "candidate_code": existing.candidate_code,
+                                "name": existing.name,
+                                "status": existing.status,
+                                "skipped_duplicate": True,
+                                **outcome, "upload_status": "skipped_duplicate",
+                            })
+                            continue
+                        elif duplicate_strategy == "overwrite":
+                            # 覆盖：更新已有候选人的基础信息，保留状态和评分
+                            existing.source = actual_source
+                            existing.source_detail = file_name
+                            existing.city = resolved_city or existing.city
+                            existing.updated_by = actor_id
+                            # 创建新的简历文件记录
+                            upload_mime_type = str(item.get("content_type") or "").strip()
+                            if not upload_mime_type or upload_mime_type in {"application/octet-stream", "binary/octet-stream"}:
+                                upload_mime_type = mimetypes.guess_type(file_name)[0] or None
+                            relative_storage_path = str(storage_path.relative_to(RECRUITMENT_UPLOAD_ROOT))
+                            resume_file = RecruitmentResumeFile(org_code=candidate_org_code, candidate_id=existing.id, original_name=file_name, stored_name=stored_name, file_ext=ext, mime_type=upload_mime_type or None, file_size=file_size, storage_path=relative_storage_path, parse_status="pending", uploaded_by=actor_id)
+                            self.db.add(resume_file)
+                            self.db.flush()
+                            existing.latest_resume_file_id = resume_file.id
+                            self.db.flush()
+                            payload = self._serialize_candidate_summary(existing)
+                            payload["auto_screen_enabled"] = bool(position.auto_screen_on_upload) if position else False
+                            payload["overwritten"] = True
+                            payload.update(outcome, upload_status="uploaded")
+                            commit_started = True
+                            self.db.commit()
+                            results.append(payload)
+                            continue
 
-        self.db.flush()
-
-        for candidate, resume_file, pos, file_name in candidate_resume_pairs:
-            candidate.candidate_code = f"CAD-{candidate.id:05d}"
-            resume_file.candidate_id = candidate.id
-            self.db.add(resume_file)
-
-        self.db.flush()
-
-        for candidate, resume_file, pos, file_name in candidate_resume_pairs:
-            candidate.latest_resume_file_id = resume_file.id
-
-        self.db.commit()
-
-        for candidate, resume_file, pos, file_name in candidate_resume_pairs:
-            self.db.refresh(candidate)
-            payload = self._serialize_candidate_summary(candidate)
-            payload["auto_screen_enabled"] = bool(pos.auto_screen_on_upload) if pos else False
-            results.append(payload)
+                candidate = RecruitmentCandidate(candidate_code=f"TMP-{uuid.uuid4().hex[:8]}", org_code=candidate_org_code, position_id=position.id if position else None, name=candidate_name, name_source=candidate_name_source, name_confidence=candidate_name_confidence, source=actual_source, source_detail=file_name, status=initial_status, city=resolved_city, tags_json=json_dumps_safe([]), created_by=actor_id, updated_by=actor_id, deleted=False)
+                self.db.add(candidate)
+                self.db.flush()
+                candidate.candidate_code = f"CAD-{candidate.id:05d}"
+                upload_mime_type = str(item.get("content_type") or "").strip()
+                if not upload_mime_type or upload_mime_type in {"application/octet-stream", "binary/octet-stream"}:
+                    upload_mime_type = mimetypes.guess_type(file_name)[0] or None
+                # Store relative path (relative to RECRUITMENT_UPLOAD_ROOT) for cross-environment compatibility
+                relative_storage_path = str(storage_path.relative_to(RECRUITMENT_UPLOAD_ROOT))
+                resume_file = RecruitmentResumeFile(org_code=candidate_org_code, candidate_id=candidate.id, original_name=file_name, stored_name=stored_name, file_ext=ext, mime_type=upload_mime_type or None, file_size=file_size, storage_path=relative_storage_path, parse_status="pending", uploaded_by=actor_id)
+                self.db.add(resume_file)
+                self.db.flush()
+                candidate.latest_resume_file_id = resume_file.id
+                self.db.flush()
+                payload = self._serialize_candidate_summary(candidate)
+                payload["auto_screen_enabled"] = bool(position.auto_screen_on_upload) if position else False
+                payload.update(outcome, upload_status="uploaded")
+                commit_started = True
+                self.db.commit()
+                results.append(payload)
+            except Exception as exc:
+                # A lost commit acknowledgement is not proof of rollback. Keep its file
+                # and require reconciliation instead of allowing a duplicate retry.
+                logger.warning("Resume upload item failed: index=%s phase=%s error=%s",
+                               outcome["file_index"], "commit" if commit_started else "prepare", type(exc).__name__)
+                try:
+                    self.db.rollback()
+                except Exception as rollback_exc:
+                    logger.warning("Resume upload rollback failed: %s", type(rollback_exc).__name__)
+                if not commit_started:
+                    try:
+                        storage_path.unlink(missing_ok=True)
+                    except OSError as cleanup_exc:
+                        logger.warning("Resume upload file cleanup failed: %s", type(cleanup_exc).__name__)
+                results.append({
+                    **outcome,
+                    "upload_status": "unknown" if commit_started else "failed",
+                    "upload_error": "upload_commit_unknown" if commit_started else "upload_save_failed",
+                    "retryable": not commit_started,
+                })
 
         return results
 
