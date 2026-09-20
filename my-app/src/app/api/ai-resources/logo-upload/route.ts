@@ -49,6 +49,8 @@ export async function POST(request: NextRequest) {
         const filePath = path.join(LOGOS_DIR, `${id}${ext}`);
 
         fs.writeFileSync(filePath, buffer);
+        const tombstone = `${filePath}.deleted`;
+        if (fs.existsSync(tombstone)) fs.unlinkSync(tombstone);
 
         return NextResponse.json({
             success: true,

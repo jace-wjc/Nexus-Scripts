@@ -4,8 +4,9 @@ import path from 'path';
 
 import { validateExternalHttpUrl } from '@/lib/server/networkGuards';
 import { requireFreshScriptHubPermission } from '@/lib/server/scriptHubSession';
+import { getResourceLogoDirectory, getResourceLogoReadDirectories, RESOURCE_LOGO_EXTENSIONS } from '@/lib/server/resourceLogoPaths';
 
-const LOGOS_DIR = path.join(process.cwd(), 'public', 'ai-logos');
+const LOGOS_DIR = getResourceLogoDirectory('ai-logos');
 
 function isValidResourceId(id: string): boolean {
     return /^[a-zA-Z0-9_-]+$/.test(id);
@@ -37,16 +38,15 @@ export async function GET(request: NextRequest) {
             return NextResponse.json({ error: 'Invalid id format' }, { status: 400 });
         }
 
-        ensureLogosDir();
-
-        const extensions = ['.png', '.jpg', '.jpeg', '.ico', '.svg', '.webp', '.gif'];
-        for (const ext of extensions) {
-            const filePath = path.join(LOGOS_DIR, `${id}${ext}`);
-            if (fs.existsSync(filePath)) {
-                return NextResponse.json({
-                    exists: true,
-                    path: `/ai-logos/${id}${ext}`
-                });
+        const extensions = RESOURCE_LOGO_EXTENSIONS;
+        for (const directory of getResourceLogoReadDirectories('ai-logos')) {
+            for (const ext of extensions) {
+                const filename = `${id}${ext}`;
+                const filePath = path.join(directory, filename);
+                if (fs.existsSync(path.join(LOGOS_DIR, `${filename}.deleted`))) continue;
+                if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+                    return NextResponse.json({ exists: true, path: `/ai-logos/${filename}` });
+                }
             }
         }
 
@@ -106,6 +106,8 @@ async function tryDownload(id: string, url: string): Promise<{ success: boolean;
 
         const filePath = path.join(LOGOS_DIR, `${id}${ext}`);
         fs.writeFileSync(filePath, buffer);
+        const tombstone = `${filePath}.deleted`;
+        if (fs.existsSync(tombstone)) fs.unlinkSync(tombstone);
 
         return {
             success: true,
@@ -140,20 +142,18 @@ export async function POST(request: NextRequest) {
 
         ensureLogosDir();
 
-        // 检查是否已存在有效文件
-        const extensions = ['.png', '.jpg', '.jpeg', '.ico', '.svg', '.webp', '.gif'];
-        for (const ext of extensions) {
-            const existingPath = path.join(LOGOS_DIR, `${id}${ext}`);
-            if (fs.existsSync(existingPath)) {
-                const stats = fs.statSync(existingPath);
-                if (stats.size > 100) {
-                    return NextResponse.json({
-                        success: true,
-                        path: `/ai-logos/${id}${ext}`,
-                        cached: true
-                    });
-                } else {
-                    fs.unlinkSync(existingPath);
+        // Both manual uploads and previously bundled files share the same catalog.
+        const extensions = RESOURCE_LOGO_EXTENSIONS;
+        for (const directory of getResourceLogoReadDirectories('ai-logos')) {
+            for (const ext of extensions) {
+                const filename = `${id}${ext}`;
+                if (fs.existsSync(path.join(LOGOS_DIR, `${filename}.deleted`))) continue;
+                const existingPath = path.join(directory, filename);
+                if (fs.existsSync(existingPath)) {
+                    const stats = fs.statSync(existingPath);
+                    if (stats.isFile() && stats.size > 100) {
+                        return NextResponse.json({ success: true, path: `/ai-logos/${filename}`, cached: true });
+                    }
                 }
             }
         }
@@ -282,15 +282,22 @@ export async function DELETE(request: NextRequest) {
 
         ensureLogosDir();
 
-        const extensions = ['.png', '.jpg', '.jpeg', '.ico', '.svg', '.webp', '.gif'];
+        const extensions = RESOURCE_LOGO_EXTENSIONS;
         let deleted = false;
 
-        for (const ext of extensions) {
-            const filePath = path.join(LOGOS_DIR, `${id}${ext}`);
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-                deleted = true;
-                break;
+        for (const directory of getResourceLogoReadDirectories('ai-logos')) {
+            for (const ext of extensions) {
+                const filename = `${id}${ext}`;
+                const filePath = path.join(directory, filename);
+                const tombstone = path.join(LOGOS_DIR, `${filename}.deleted`);
+                if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+                    // Record the deletion first so an old bundled copy cannot reappear.
+                    fs.writeFileSync(tombstone, '');
+                    if (directory === LOGOS_DIR) fs.unlinkSync(filePath);
+                    deleted = true;
+                } else if (fs.existsSync(tombstone)) {
+                    deleted = true;
+                }
             }
         }
 
