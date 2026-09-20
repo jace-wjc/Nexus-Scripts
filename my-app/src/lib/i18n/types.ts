@@ -1180,6 +1180,7 @@ export interface Translations {
         abort: string;
         aborting: string;
         download: string;
+        downloading: string;
         cancel: string; // Add cancel here if it's missing in type definition but used
       };
       status: {
@@ -1187,6 +1188,8 @@ export interface Translations {
         processing: string;
         completed: string;
         completedDesc: string;
+        partial: string;
+        partialDesc: string;
         remaining: string;
         waiting: string;
         progressLabel: string;
@@ -1225,6 +1228,9 @@ export interface Translations {
         selectFolder: string;
         success: string;
         fail: string;
+        downloadForbidden: string;
+        downloadFailed: string;
+        resultMissing: string;
       };
       logs: {
         startUpload: string;

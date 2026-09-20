@@ -1210,6 +1210,7 @@ export const zhCN: Translations = {
                 abort: '终止处理',
                 aborting: '正在终止...',
                 download: '下载 Excel 报表',
+                downloading: '正在下载...',
                 cancel: '取消',
             },
             status: {
@@ -1219,6 +1220,8 @@ export const zhCN: Translations = {
                 waiting: '等待任务开始...',
                 completed: '处理完成！',
                 completedDesc: '您的比对结果报表已生成完毕。',
+                partial: '处理已中止',
+                partialDesc: '可以下载已保存的部分结果，尚未完成全部处理。',
                 progressLabel: '处理进度',
             },
             form: {
@@ -1252,6 +1255,9 @@ export const zhCN: Translations = {
             },
             messages: {
                 selectExcel: '请先选择 Excel 文件',
+                downloadForbidden: '会话已过期或无权访问此结果，请重新登录并核对归属。',
+                downloadFailed: '下载失败，请稍后重试。',
+                resultMissing: '未生成可下载的结果文件，请查看处理日志。',
                 selectFolder: '请先选择图片文件夹',
                 success: 'OCR分析完成',
                 fail: 'OCR分析失败',

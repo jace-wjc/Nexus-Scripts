@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
-from starlette.responses import StreamingResponse
+from starlette.responses import FileResponse, StreamingResponse
 
 from ..database import get_db
 from ..models import (
@@ -27,6 +27,7 @@ from ..services import MobileTaskService
 from ..services.ai_service import AiService
 from ..services.script_hub_audit_service import write_audit_log
 from ..upload_paths import safe_upload_destination, safe_upload_relative_path
+from ..ocr_result_access import is_ocr_administrator, register_owner, require_owner, result_path
 
 logger = logging.getLogger(__name__)
 workbench_router = APIRouter(tags=["工作台工具"])
@@ -39,12 +40,40 @@ def get_ai_service():
     return AiService()
 
 
+@workbench_router.get("/outputs/{filename:path}", tags=["OCR处理"])
+def download_ocr_result(filename: str, _session=Depends(require_script_hub_permission("ocr-tool"))):
+    root = Path(OUTPUTS_DIR)
+    output = result_path(root, filename)
+    require_owner(root, "results", filename, _session)
+    if not output.is_file():
+        raise HTTPException(status_code=404, detail="ocr_result_not_found")
+    return FileResponse(output, filename=filename, headers={
+        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+    })
+
+
 @workbench_router.post("/ocr/process", tags=["OCR处理"])
 async def process_ocr(
     request: OCRProcessRequest,
     _session: Dict[str, Any] = Depends(require_script_hub_permission("ocr-tool")),
 ):
     request_id = str(uuid.uuid4())
+    root = Path(OUTPUTS_DIR).resolve()
+    source = Path(request.source_folder).resolve()
+    if (source.is_relative_to(root) or root.is_relative_to(source)) and not is_ocr_administrator(_session):
+        raise HTTPException(status_code=403, detail="ocr_result_forbidden")
+    excel = Path(request.excel_path).resolve()
+    if excel.is_relative_to(root):
+        result_path(root, excel.relative_to(root).as_posix())
+        require_owner(root, "results", excel.name, _session)
+    target = Path(request.target_excel_path).resolve()
+    if target.is_relative_to(root):
+        result_path(root, target.relative_to(root).as_posix())
+        if target.exists():
+            require_owner(root, "results", target.name, _session)
+        else:
+            register_owner(root, "results", target.name, _session)
+    register_owner(root, "jobs", request_id, _session)
     logger.info(f"[OCR本地模式] 开始 | 请求ID: {request_id}")
     logger.info(f"[OCR本地模式] 参数: Excel={request.excel_path}, 附件={request.source_folder}, 模式={request.mode}")
 
@@ -54,6 +83,7 @@ async def process_ocr(
             source_folder=request.source_folder,
             target_excel_path=request.target_excel_path,
             mode=request.mode,
+            request_id=request_id,
         ),
         media_type="application/x-ndjson",
     )
@@ -78,6 +108,7 @@ async def process_ocr_upload(
                 safe_upload_relative_path(image.filename)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid upload path") from None
+    register_owner(Path(OUTPUTS_DIR), "jobs", request_id, _session)
     logger.info(f"[OCR上传模式] 参数: Excel={excel_file.filename}, 图片数={len(image_files)}, 模式={mode}")
     if http_request is not None:
         write_audit_log(
@@ -141,8 +172,9 @@ async def process_ocr_upload(
 
             yield json.dumps({"type": "log", "content": f"已接收图片文件: {count} 个"}, ensure_ascii=False) + "\n"
 
-            output_filename = f"ocr_result_{uuid.uuid4().hex[:8]}.xlsx"
+            output_filename = f"ocr_result_{uuid.uuid4().hex}.xlsx"
             target_excel_path = os.path.join(OUTPUTS_DIR, output_filename)
+            register_owner(Path(OUTPUTS_DIR), "results", output_filename, _session)
 
             ocr_gen = run_ocr_process(
                 excel_path=str(excel_path),
@@ -152,22 +184,22 @@ async def process_ocr_upload(
                 request_id=request_id,
             )
 
+            terminal = None
             for item in ocr_gen:
-                yield item
-
-            if os.path.exists(target_excel_path):
-                yield json.dumps({
-                    "type": "result",
-                    "success": True,
-                    "message": "处理完成",
-                    "download_url": f"outputs/{output_filename}",
-                }, ensure_ascii=False) + "\n"
-            else:
-                yield json.dumps({
-                    "type": "result",
-                    "success": False,
-                    "message": "未生成结果文件",
-                }, ensure_ascii=False) + "\n"
+                packet = json.loads(item)
+                if packet.get("type") == "result":
+                    terminal = packet
+                else:
+                    yield item
+            # One terminal result: an existing partial file must not turn a
+            # failed or aborted OCR operation into a second success response.
+            if terminal is None:
+                terminal = {"type": "result", "success": False, "message": "ocr_result_missing"}
+            if terminal.get("success") and os.path.isfile(target_excel_path):
+                terminal["download_url"] = f"outputs/{output_filename}"
+            elif terminal.get("success"):
+                terminal = {"type": "result", "success": False, "message": "ocr_result_missing"}
+            yield json.dumps(terminal, ensure_ascii=False) + "\n"
         finally:
             try:
                 shutil.rmtree(temp_dir)
@@ -183,6 +215,7 @@ async def abort_ocr(
     _session: Dict[str, Any] = Depends(require_script_hub_permission("ocr-tool")),
 ):
     logger.info(f"[OCR中止] 收到中止请求 | 请求ID: {request_id}")
+    require_owner(Path(OUTPUTS_DIR), "jobs", request_id, _session)
     set_abort_signal(request_id)
     return {"success": True, "message": f"已发送中止信号: {request_id}"}
 

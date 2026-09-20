@@ -6,8 +6,9 @@ import { Label } from './ui/label';
 import { ArrowLeft, Play, FileText, Folder, Loader2, Download, AlertTriangle } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { getApiBaseUrl } from '../lib/api';
-import { getScriptHubAuthHeaderRecord } from '../lib/auth';
+import { authenticatedFetch, getScriptHubAuthHeaderRecord } from '../lib/auth';
 import { useI18n } from '@/lib/i18n';
+import { consumeOcrStream } from './ocrStream';
 import {
     Dialog,
     DialogContent,
@@ -36,6 +37,8 @@ export default function OCRScript({ onBack }: OCRScriptProps) {
     const [isRunning, setIsRunning] = useState(false);
     const [logs, setLogs] = useState<string[]>([]);
     const [downloadUrl, setDownloadUrl] = useState('');
+    const [downloading, setDownloading] = useState(false);
+    const [partialResult, setPartialResult] = useState(false);
 
     // 进度跟踪
     const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
@@ -105,6 +108,7 @@ export default function OCRScript({ onBack }: OCRScriptProps) {
         setIsRunning(true);
         setLogs([]);
         setDownloadUrl('');
+        setPartialResult(false);
         setProgress(null);
         setRequestId('');
         setIsAborting(false);
@@ -147,67 +151,36 @@ export default function OCRScript({ onBack }: OCRScriptProps) {
 
             setLogs(prev => [...prev, ocr.logs.uploadComplete]);
 
-            const reader = response.body?.getReader();
-            if (!reader) throw new Error('无法读取响应流');
-
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    try {
-                        const data = JSON.parse(line);
-                        if (data.type === 'init' && data.request_id) {
-                            // 保存 request_id 用于中止请求
-                            setRequestId(data.request_id);
-                        } else if (data.type === 'progress') {
-                            // 更新进度
-                            setProgress({ current: data.current, total: data.total });
-                        } else if (data.type === 'log') {
-                            setLogs(prev => [...prev, data.content]);
-                        } else if (data.type === 'result') {
-                            if (data.success) {
-                                if (data.aborted) {
-                                    toast.warning(data.message);
-                                } else {
-                                    toast.success(ocr.messages.success);
-                                }
-                                setLogs(prev => [...prev, `✅ ${data.message} `]);
-                                if (data.download_url) {
-                                    setDownloadUrl(`${base}/${data.download_url}`);
-                                }
-                            } else {
-                                toast.error(data.message);
-                                setLogs(prev => [...prev, `❌ ${data.message}`]);
-                            }
-                        }
-                    } catch { }
-                }
-            }
-
-            if (buffer.trim()) {
-                try {
-                    const data = JSON.parse(buffer);
-                    if (data.type === 'result' && data.success && data.download_url) {
+            await consumeOcrStream(response.body, data => {
+                if (data.type === 'init') {
+                    setRequestId(data.request_id);
+                } else if (data.type === 'progress') {
+                    setProgress({ current: data.current, total: data.total });
+                } else if (data.type === 'log') {
+                    setLogs(prev => [...prev, data.content]);
+                } else if (data.success) {
+                    if (data.aborted) toast.warning(data.message || ocr.status.partial);
+                    else toast.success(ocr.messages.success);
+                    setLogs(prev => [...prev, `${data.aborted ? '⚠️' : '✅'} ${data.message}`]);
+                    if (data.download_url) {
+                        setPartialResult(Boolean(data.aborted));
                         setDownloadUrl(`${base}/${data.download_url}`);
                     }
-                } catch { }
-            }
+                } else {
+                    const message = data.message === 'ocr_result_missing' || !data.message ? ocr.messages.resultMissing : data.message;
+                    toast.error(message);
+                    setLogs(prev => [...prev, `❌ ${message}`]);
+                }
+            });
 
         } catch (error: unknown) {
             // 检查是否为用户中止
             if (error instanceof Error && error.name === 'AbortError') {
                 setLogs(prev => [...prev, ocr.logs.aborted]);
             } else {
-                const errMsg = error instanceof Error ? error.message : String(error);
+                const rawMessage = error instanceof Error ? error.message : String(error);
+                const errMsg = ['ocr_result_missing', 'ocr_stream_invalid'].includes(rawMessage) ? ocr.messages.resultMissing : rawMessage;
+                setDownloadUrl('');
                 toast.error(ocr.logs.failed + errMsg);
                 setLogs(prev => [...prev, `❌ ${ocr.logs.failed} ${errMsg}`]);
             }
@@ -216,6 +189,35 @@ export default function OCRScript({ onBack }: OCRScriptProps) {
             setIsAborting(false);
             setProgress(null);
             abortControllerRef.current = null;
+        }
+    };
+
+    const handleDownload = async () => {
+        if (!downloadUrl || downloading) return;
+        setDownloading(true);
+        try {
+            const expected = new URL(`${getApiBaseUrl()}/outputs/`, window.location.href);
+            const target = new URL(downloadUrl, window.location.href);
+            if (target.origin !== expected.origin || !target.pathname.startsWith(expected.pathname)) {
+                throw new Error('invalid_download_target');
+            }
+            const response = await authenticatedFetch(target.href, { cache: 'no-store' });
+            if (!response.ok) {
+                toast.error(response.status === 401 || response.status === 403 ? ocr.messages.downloadForbidden : ocr.messages.downloadFailed);
+                return;
+            }
+            const objectUrl = URL.createObjectURL(await response.blob());
+            const anchor = document.createElement('a');
+            anchor.href = objectUrl;
+            anchor.download = decodeURIComponent(target.pathname.split('/').pop() || 'ocr-result.xlsx');
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+        } catch {
+            toast.error(ocr.messages.downloadFailed);
+        } finally {
+            setDownloading(false);
         }
     };
 
@@ -556,18 +558,19 @@ export default function OCRScript({ onBack }: OCRScriptProps) {
                             <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-6 flex flex-col md:flex-row items-center justify-between gap-4">
                                 <div className="flex items-center gap-4">
                                     <div className="w-12 h-12 bg-green-500/20 rounded-full flex items-center justify-center shrink-0">
-                                        <Download className="w-6 h-6 text-green-600" />
+                                        <Download className="w-6 h-6 text-green-600 dark:text-green-300" />
                                     </div>
                                     <div>
-                                        <h3 className="text-lg font-bold text-green-800">{ocr.status.completed}</h3>
-                                        <p className="text-green-600 text-sm">{ocr.status.completedDesc}</p>
+                                        <h3 className="text-lg font-bold text-green-800 dark:text-green-200">{partialResult ? ocr.status.partial : ocr.status.completed}</h3>
+                                        <p className="text-green-700 dark:text-green-300 text-sm">{partialResult ? ocr.status.partialDesc : ocr.status.completedDesc}</p>
                                     </div>
                                 </div>
                                 <Button
-                                    className="w-full md:w-auto bg-green-600 hover:bg-green-700 text-white shadow-lg shadow-green-600/20"
-                                    onClick={() => window.open(downloadUrl, '_blank')}
+                                    className="w-full shrink-0 md:w-auto bg-green-600 hover:bg-green-700 text-white shadow-lg shadow-green-600/20"
+                                    onClick={() => void handleDownload()}
+                                    disabled={downloading}
                                 >
-                                    {ocr.actions.download}
+                                    {downloading ? ocr.actions.downloading : ocr.actions.download}
                                 </Button>
                             </div>
                         </div>

@@ -21,7 +21,6 @@ from .config import settings
 from .database import SessionLocal
 from .schema_maintenance import ensure_recruitment_schema, ensure_script_hub_schema
 from .routers import (
-    OUTPUTS_DIR,
     ai_resources_router,
     auth_router,
     business_core_router,
@@ -335,5 +334,3 @@ async def custom_redoc_ui():
         title="春苗系统结算API - ReDoc",
         redoc_js_url="/static/swagger/redoc.standalone.js",  # 需提前下载redoc文件
     )
-
-app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")

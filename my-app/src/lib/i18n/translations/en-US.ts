@@ -1211,6 +1211,7 @@ export const enUS: Translations = {
                 abort: 'Abort Process',
                 aborting: 'Process Aborting...',
                 download: 'Download Excel Report',
+                downloading: 'Downloading...',
                 cancel: 'Cancel',
             },
             status: {
@@ -1220,6 +1221,8 @@ export const enUS: Translations = {
                 waiting: 'Waiting to start...',
                 completed: 'Completed!',
                 completedDesc: 'Your comparison report is ready.',
+                partial: 'Processing stopped',
+                partialDesc: 'Saved partial results are available to download. Processing was not completed.',
                 progressLabel: 'Progress',
             },
             form: {
@@ -1253,6 +1256,9 @@ export const enUS: Translations = {
             },
             messages: {
                 selectExcel: 'Please select an Excel file first',
+                downloadForbidden: 'Your session has expired or you cannot access this result. Sign in again and verify ownership.',
+                downloadFailed: 'Download failed. Please try again later.',
+                resultMissing: 'No downloadable result was generated. Check the processing log.',
                 selectFolder: 'Please select a folder containing images',
                 success: 'OCR Analysis Completed',
                 fail: 'OCR Analysis Failed',
