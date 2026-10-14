@@ -64,6 +64,9 @@ class TaxReportGenerator:
         if not amount_field:
             raise ValueError(f"无效的 amount_type: {amount_type}")
 
+        month_start = datetime.datetime.strptime(year_month, '%Y-%m')
+        next_month = (month_start.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+
         try:
             with DatabaseManager(self.db_config) as conn:
                 with conn.cursor(pymysql.cursors.DictCursor) as cursor:
@@ -91,10 +94,12 @@ class TaxReportGenerator:
                         biz_balance_worker
                     WHERE
                         pay_status = 3
+                        AND deleted = 0
                         AND enterprise_id <> 36
-                        AND DATE_FORMAT(payment_over_time, '%%Y-%%m') = %s
+                        AND payment_over_time >= %s
+                        AND payment_over_time < %s
                     """
-                    params = [year_month]
+                    params = [month_start.strftime('%Y-%m-%d'), next_month.strftime('%Y-%m-%d')]
 
                     if enterprise_ids is not None:
                         ids_to_query = []
@@ -458,7 +463,7 @@ class PlatformReportGenerator:
                         ROUND(SUM({amount_field}), 2) AS labor_income,
                         ROUND(SUM(w.service_amount), 2) AS service_fee,
                         COUNT(w.id) AS trade_count,
-                        MAX(wa.username) AS miniapp_id,
+                        wa.username AS miniapp_id,
                         MAX(w.mobile) AS mobile,
                         ROUND(SUM(w.tax_amount), 2) AS tax_amount,
                         ROUND(SUM(w.worker_pay_amount + w.tax_amount), 2) AS total_with_tax,
@@ -466,15 +471,29 @@ class PlatformReportGenerator:
                     FROM
                         biz_balance_worker w
                         LEFT JOIN biz_enterprise_base eb ON eb.id = w.enterprise_id
-                        LEFT JOIN biz_worker_account wa ON wa.worker_id = w.worker_id
+                        LEFT JOIN (
+                            SELECT worker_id, username
+                            FROM (
+                                SELECT worker_id, username,
+                                    ROW_NUMBER() OVER (
+                                        PARTITION BY worker_id
+                                        ORDER BY create_time DESC, id DESC
+                                    ) AS account_rank
+                                FROM biz_worker_account
+                                WHERE deleted = 0
+                            ) ranked_accounts
+                            WHERE account_rank = 1
+                        ) wa ON wa.worker_id = w.worker_id
                         LEFT JOIN (
                             SELECT worker_id, MIN(sign_time) AS sign_time
                             FROM biz_enterprise_sign
                             WHERE sign_status = 0
+                                AND deleted = 0
                             GROUP BY worker_id
                         ) es ON es.worker_id = w.worker_id
                     WHERE
                         w.pay_status = 3
+                        AND w.deleted = 0
                         AND w.enterprise_id <> 36
                         AND w.payment_over_time >= %s
                         AND w.payment_over_time < %s
@@ -504,10 +523,12 @@ class PlatformReportGenerator:
                     sql += """
                     GROUP BY
                         w.worker_id,
+                        w.enterprise_id,
                         w.realname,
                         w.credential_num,
                         eb.enterprise_name,
-                        eb.USCC
+                        eb.USCC,
+                        wa.username
                     ORDER BY
                         w.realname, eb.enterprise_name
                     """
